@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.0.0] — 2026-06-16
+
+First stable release. The public surface — the `OGMA_*` settings, the `/new` · `/model` · `/effort` ·
+`/fallback` commands, the skills + ticket workflow, and the systemd layout — is considered stable
+going forward; breaking changes will bump the major version.
+
+### Added
+- **Continuous integration** — a GitHub Actions workflow runs `py_compile` (Python) and `bash -n`
+  (shell) on every push to `main` and every pull request, with a build badge in the README. No
+  secrets; never touches a deployment.
+
+Consolidates the whole 0.x line: the long-poll gateway, guided installer (`bin/setup`, plus
+`--check`), self-management (`ogmactl`), scheduled routines (briefing/dream/health), skill templates,
+the ticket workflow, model/effort/fallback controls, the per-chat concurrency guard, and startup
+token validation.
+
 ## [0.5.0] — 2026-06-16
 
 ### Added
@@ -106,6 +122,7 @@ First public release. A minimal, self-hosted bridge from Telegram to Claude Code
 - Single shared brain — multiple allow-listed chats share one persona/workspace/memory. Per-user
   isolation is planned (see issues).
 
+[1.0.0]: https://github.com/eric-wien/ogma/releases/tag/v1.0.0
 [0.5.0]: https://github.com/eric-wien/ogma/releases/tag/v0.5.0
 [0.4.0]: https://github.com/eric-wien/ogma/releases/tag/v0.4.0
 [0.3.0]: https://github.com/eric-wien/ogma/releases/tag/v0.3.0

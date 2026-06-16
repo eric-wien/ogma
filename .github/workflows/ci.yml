@@ -1,0 +1,32 @@
+name: CI
+
+# Lightweight syntax checks — the same ones run by hand before each commit.
+# Runs on GitHub's own Linux runner; never touches a real deployment, .env, or token.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Python syntax (py_compile)
+        run: python3 -m py_compile gateway.py hooks/*.py bin/news-fetch
+
+      - name: Shell syntax (bash -n)
+        run: |
+          ok=1
+          shopt -s nullglob
+          for f in bin/*; do
+            if head -1 "$f" | grep -qE 'bin/(ba)?sh|env (ba)?sh'; then
+              if bash -n "$f"; then echo "ok   $f"; else echo "FAIL $f"; ok=0; fi
+            fi
+          done
+          [ "$ok" = 1 ]

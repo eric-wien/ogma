@@ -1,5 +1,7 @@
 # Ogma
 
+[![CI](https://github.com/eric-wien/ogma/actions/workflows/ci.yml/badge.svg)](https://github.com/eric-wien/ogma/actions/workflows/ci.yml)
+
 A minimal personal-assistant gateway: talk to **Claude Code** from **Telegram**, from anywhere.
 Inspired by [Nous Research's Hermes Agent](https://github.com/NousResearch/hermes-agent), rebuilt
 on Claude Code's native skills + memory + subagents. Named for Ogma, the Celtic god of eloquence
