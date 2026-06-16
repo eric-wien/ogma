@@ -38,9 +38,25 @@ DEFAULT_FEEDS = [
 ]
 
 
+def _feeds_from_env_file():
+    """Fallback: read OGMA_RSS_FEEDS from the sibling .env when it's not in the
+    environment (so the setting works whether news-fetch is run by bin/briefing,
+    by systemd, or directly by hand)."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("OGMA_RSS_FEEDS="):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return ""
+
+
 def load_feeds():
-    """(label, url) list from OGMA_RSS_FEEDS, else the generic defaults."""
-    raw = os.environ.get("OGMA_RSS_FEEDS", "").strip()
+    """(label, url) list from OGMA_RSS_FEEDS (env or .env), else the generic defaults."""
+    raw = (os.environ.get("OGMA_RSS_FEEDS", "").strip() or _feeds_from_env_file())
     if not raw:
         return DEFAULT_FEEDS
     feeds = []

@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] — 2026-06-16
+
+### Fixed
+- `news-fetch` now reads `OGMA_RSS_FEEDS` from `.env` as a fallback when it isn't in the environment,
+  so configured feeds take effect whether it's run by `bin/briefing`, by systemd, or directly.
+  Previously the `.env` setting silently had no effect unless the variable was exported by hand.
+
 ## [0.2.0] — 2026-06-16
 
 ### Changed
@@ -56,6 +63,7 @@ First public release. A minimal, self-hosted bridge from Telegram to Claude Code
 - Single shared brain — multiple allow-listed chats share one persona/workspace/memory. Per-user
   isolation is planned (see issues).
 
+[0.2.1]: https://github.com/eric-wien/ogma/releases/tag/v0.2.1
 [0.2.0]: https://github.com/eric-wien/ogma/releases/tag/v0.2.0
 [0.1.1]: https://github.com/eric-wien/ogma/releases/tag/v0.1.1
 [0.1.0]: https://github.com/eric-wien/ogma/releases/tag/v0.1.0
