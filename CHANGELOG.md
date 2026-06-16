@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] — 2026-06-16
+
+### Changed
+- Hardened `bin/setup`'s chat-ID authorization from best-effort to reliable:
+  - reads the bot token from `.env` (fixes re-runs that kept an existing token and silently skipped).
+  - validates the token up front, with a clear message on `401 Unauthorized`.
+  - pauses a running `ogma-gateway` during detection so it can't swallow your message.
+  - polls `getUpdates` for ~45s (non-destructive) instead of a single immediate check.
+  - handles `409 Conflict` (another poller) and offers retry / manual entry / skip instead of
+    failing quietly.
+
 ## [0.1.1] — 2026-06-16
 
 ### Changed
@@ -45,5 +56,6 @@ First public release. A minimal, self-hosted bridge from Telegram to Claude Code
 - Single shared brain — multiple allow-listed chats share one persona/workspace/memory. Per-user
   isolation is planned (see issues).
 
+[0.2.0]: https://github.com/eric-wien/ogma/releases/tag/v0.2.0
 [0.1.1]: https://github.com/eric-wien/ogma/releases/tag/v0.1.1
 [0.1.0]: https://github.com/eric-wien/ogma/releases/tag/v0.1.0

@@ -127,49 +127,134 @@ if [ "$HAVE_SYSTEMD" = 1 ]; then
   fi
 fi
 
-# --- First-run: discover chat ID ---------------------------------------------
+# --- First-run: discover & authorize chat ID --------------------------------
 step "Authorizing your chat"
+# Read straight from .env (NOT the prompt vars) so re-runs that kept an existing
+# token/allow-list behave correctly.
+tok="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV" | cut -d= -f2-)"
 allowed="$(grep -E '^TELEGRAM_ALLOWED_USERS=' "$ENV" | cut -d= -f2-)"
-if [ -n "$token" ] && [ -z "$allowed" ]; then
-  say "To authorize yourself, Ogma needs your Telegram chat ID."
-  if yes "Message your bot now and let me detect your chat ID automatically?" "y"; then
-    say "Open Telegram, send your bot any message, then press Enter here."
-    read -r _ || true
-    ids="$($PY - "$token" <<'PY'
-import json, sys, urllib.request
-tok = sys.argv[1]
+
+# Accept an integer chat ID (negative allowed for groups) or a comma-list of them.
+valid_ids() { [[ "$1" =~ ^-?[0-9]+(,[[:space:]]*-?[0-9]+)*$ ]]; }
+
+if [ -n "$allowed" ]; then
+  ok "TELEGRAM_ALLOWED_USERS already set: $allowed"
+elif [ -z "$tok" ]; then
+  warn "No bot token in .env — set TELEGRAM_BOT_TOKEN first, then re-run setup to authorize."
+else
+  # 1) Confirm the token actually works before asking you to message the bot.
+  botuser="$(API_TOK="$tok" "$PY" - <<'PY'
+import os, json, urllib.request, urllib.error
+tok = os.environ["API_TOK"]
 try:
-    with urllib.request.urlopen(f"https://api.telegram.org/bot{tok}/getUpdates", timeout=15) as r:
-        data = json.load(r)
+    with urllib.request.urlopen(f"https://api.telegram.org/bot{tok}/getMe", timeout=15) as r:
+        d = json.load(r)
+except urllib.error.HTTPError as e:
+    print("INVALID" if e.code == 401 else f"HTTPERR {e.code}"); raise SystemExit
 except Exception as e:
-    print("ERR", e); sys.exit(0)
-seen = []
-for u in data.get("result", []):
-    m = u.get("message") or u.get("edited_message") or {}
-    cid = (m.get("chat") or {}).get("id")
-    if cid is not None and cid not in seen:
-        seen.append(cid)
-print(" ".join(str(i) for i in seen))
+    print("NETERR " + str(e)[:80]); raise SystemExit
+print(("OK " + (d["result"].get("username") or "?")) if d.get("ok") else "INVALID")
 PY
 )"
-    if [ -z "$ids" ] || [[ "$ids" == ERR* ]]; then
-      warn "Couldn't detect a chat ID ($ids). Message the bot, then re-run setup, or add it to TELEGRAM_ALLOWED_USERS manually."
-    else
-      say "Detected chat ID(s): ${c_bold}$ids${c_rst}"
-      pick="$(ask "Comma-separated IDs to allow" "$(echo "$ids" | tr ' ' ',')")"
-      set_env TELEGRAM_ALLOWED_USERS "$pick"; ok "Authorized: $pick"
+  case "$botuser" in
+    "OK "*) bot_un="@${botuser#OK }"; ok "Token valid — bot is $bot_un" ;;
+    INVALID) err "Telegram rejects this token (Unauthorized). Re-run setup and paste the exact token from @BotFather (/mybots → API Token)."; bot_un="" ;;
+    NETERR*) err "Couldn't reach Telegram (${botuser#NETERR }). Check connectivity and re-run."; bot_un="" ;;
+    *) err "Unexpected response while validating token ($botuser)."; bot_un="" ;;
+  esac
+
+  if [ -n "$bot_un" ]; then
+    # 2) Make sure nothing else is polling this bot — a running gateway would grab
+    #    your message before we can read it. Pause the service; resume it after.
+    PAUSED=0
+    if [ "$HAVE_SYSTEMD" = 1 ] && systemctl --user is-active --quiet ogma-gateway 2>/dev/null; then
+      systemctl --user stop ogma-gateway && { PAUSED=1; warn "Paused running ogma-gateway during detection."; }
     fi
-  else
-    say "${c_dim}Manual path: run 'python3 gateway.py', message the bot, copy the chat ID it prints into TELEGRAM_ALLOWED_USERS, then restart.${c_rst}"
+
+    while true; do
+      say "Open Telegram and send ${c_bold}$bot_un${c_rst} any message (e.g. \"hi\")."
+      read -r -p "Press Enter once you've sent it… " _ || true
+      say "${c_dim}Listening for your message (up to ~45s)…${c_rst}"
+      det="$(API_TOK="$tok" POLL_SECS=45 "$PY" - <<'PY'
+import os, json, time, urllib.request, urllib.error
+tok = os.environ["API_TOK"]; deadline = time.time() + int(os.environ.get("POLL_SECS", "45"))
+seen = {}
+while time.time() < deadline:
+    try:
+        # Non-destructive read (no offset): the gateway can still pick the message up later.
+        with urllib.request.urlopen(f"https://api.telegram.org/bot{tok}/getUpdates?timeout=5", timeout=20) as r:
+            d = json.load(r)
+    except urllib.error.HTTPError as e:
+        print("CONFLICT" if e.code == 409 else ("INVALID" if e.code == 401 else f"HTTPERR {e.code}")); raise SystemExit
+    except Exception:
+        time.sleep(2); continue
+    if not d.get("ok"):
+        ec = d.get("error_code")
+        if ec == 409: print("CONFLICT"); raise SystemExit
+        if ec == 401: print("INVALID"); raise SystemExit
+        time.sleep(2); continue
+    for u in d.get("result", []):
+        m = u.get("message") or u.get("edited_message") or {}
+        c = m.get("chat") or {}
+        if c.get("id") is not None:
+            seen[c["id"]] = c.get("username") or c.get("first_name") or c.get("title") or ""
+    if seen:
+        break
+    time.sleep(1)
+if not seen:
+    print("NONE")
+else:
+    for cid, nm in seen.items():
+        print(f"ID\t{cid}\t{nm}")
+PY
+)"
+      case "$det" in
+        CONFLICT)
+          err "Another process is already polling this bot (Telegram 409). Stop it and retry — e.g. 'systemctl --user stop ogma-gateway', or kill a manual 'python3 gateway.py'." ;;
+        INVALID)
+          err "Token became unauthorized. Fix TELEGRAM_BOT_TOKEN and re-run setup."; break ;;
+        NONE|"")
+          warn "Didn't see a message in the window." ;;
+        HTTPERR*)
+          err "Telegram error during detection ($det)." ;;
+        *)
+          ids_csv="$(printf '%s\n' "$det" | awk -F'\t' '$1=="ID"{print $2}' | paste -sd, -)"
+          if [ -n "$ids_csv" ]; then
+            say "Detected chat ID(s):"
+            printf '%s\n' "$det" | awk -F'\t' '$1=="ID"{printf "  %s  (%s)\n", $2, $3}'
+            pick="$(ask "Chat ID(s) to authorize (comma-separated)" "$ids_csv")"
+            if valid_ids "$pick"; then set_env TELEGRAM_ALLOWED_USERS "${pick// /}"; ok "Authorized: $pick"; break
+            else err "Not a valid chat ID."; fi
+          else
+            warn "Unexpected detection output; will offer to retry."
+          fi ;;
+      esac
+
+      # Not authorized yet — retry, type the ID by hand, or skip.
+      choice="$(ask "Retry detection (r), enter ID manually (m), or skip (s)?" "r")"
+      case "$choice" in
+        m|M)
+          man="$(ask "Your Telegram chat ID(s), comma-separated (find it via @userinfobot)")"
+          if valid_ids "$man"; then set_env TELEGRAM_ALLOWED_USERS "${man// /}"; ok "Authorized: $man"; break
+          else err "That doesn't look like a numeric chat ID."; fi ;;
+        s|S)
+          warn "Skipped — set TELEGRAM_ALLOWED_USERS in .env later, then restart the gateway."; break ;;
+        *) : ;;  # loop and retry detection
+      esac
+    done
+
+    # Resume the gateway if we paused it.
+    if [ "$PAUSED" = 1 ]; then
+      systemctl --user start ogma-gateway && ok "Resumed ogma-gateway." || warn "Couldn't resume ogma-gateway — start it manually."
+    fi
   fi
-else
-  [ -z "$token" ] && warn "Set the token first, then re-run setup to authorize your chat." || ok "TELEGRAM_ALLOWED_USERS already set: $allowed"
 fi
 
 # --- Done --------------------------------------------------------------------
 step "Done"
+tok="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV" | cut -d= -f2-)"
 allowed="$(grep -E '^TELEGRAM_ALLOWED_USERS=' "$ENV" | cut -d= -f2-)"
-if [ "$HAVE_SYSTEMD" = 1 ] && [ -n "$token" ] && [ -n "$allowed" ]; then
+if [ "$HAVE_SYSTEMD" = 1 ] && [ -n "$tok" ] && [ -n "$allowed" ]; then
   if yes "Start the gateway now (systemctl --user enable --now ogma-gateway)?" "y"; then
     systemctl --user enable --now ogma-gateway && ok "Gateway started. Logs: journalctl --user -u ogma-gateway -f" || err "Failed to start — check: systemctl --user status ogma-gateway"
   fi
