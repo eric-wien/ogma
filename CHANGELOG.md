@@ -34,4 +34,4 @@ First public release. A minimal, self-hosted bridge from Telegram to Claude Code
 - Single shared brain — multiple allow-listed chats share one persona/workspace/memory. Per-user
   isolation is planned (see issues).
 
-[0.1.0]: https://github.com/REPLACE_ME/ogma/releases/tag/v0.1.0
+[0.1.0]: https://github.com/eric-wien/ogma/releases/tag/v0.1.0
