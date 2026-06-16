@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] — 2026-06-16
+
+### Added
+- **Fallback model.** `OGMA_FALLBACK_MODEL` + the `/fallback [name]` command: a model used
+  automatically when the primary is unavailable (rate limit/outage). Prompted in `bin/setup`; the
+  gateway passes `--fallback-model` to the `claude` CLI.
+
+### Changed
+- **Hardening & clearer errors.**
+  - On a `claude` CLI failure the bot surfaces the actual stderr reason (e.g. unknown model / bad
+    flag) instead of a bare exit code.
+  - An invalid hand-edited `OGMA_EFFORT` is ignored at startup (and logged) rather than failing every
+    message.
+  - `bin/setup` prints a config summary at the end and warns if the token, allowed chats, or the
+    `claude` CLI are missing.
+
 ## [0.3.0] — 2026-06-16
 
 ### Added
@@ -76,6 +92,7 @@ First public release. A minimal, self-hosted bridge from Telegram to Claude Code
 - Single shared brain — multiple allow-listed chats share one persona/workspace/memory. Per-user
   isolation is planned (see issues).
 
+[0.4.0]: https://github.com/eric-wien/ogma/releases/tag/v0.4.0
 [0.3.0]: https://github.com/eric-wien/ogma/releases/tag/v0.3.0
 [0.2.1]: https://github.com/eric-wien/ogma/releases/tag/v0.2.1
 [0.2.0]: https://github.com/eric-wien/ogma/releases/tag/v0.2.0

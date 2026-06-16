@@ -120,6 +120,16 @@ case "$effl" in
   *)                         warn "Unknown effort '$eff' — leaving at default."; set_env OGMA_EFFORT "" ;;
 esac
 
+say "${c_dim}A fallback model is used automatically if the main one is unavailable (rate limit/outage).${c_rst}"
+fb="$(ask "Fallback model — alias or full id (blank = none)")"
+case "$(printf '%s' "$fb" | tr '[:upper:]' '[:lower:]')" in
+  ""|none|off) set_env OGMA_FALLBACK_MODEL "";                     ok "Fallback: none" ;;
+  sonnet)      set_env OGMA_FALLBACK_MODEL "claude-sonnet-4-6";    ok "Fallback: claude-sonnet-4-6" ;;
+  haiku)       set_env OGMA_FALLBACK_MODEL "claude-haiku-4-5";     ok "Fallback: claude-haiku-4-5" ;;
+  opus)        set_env OGMA_FALLBACK_MODEL "claude-opus-4-8";      ok "Fallback: claude-opus-4-8" ;;
+  *)           set_env OGMA_FALLBACK_MODEL "$fb";                  ok "Fallback: $fb" ;;
+esac
+
 # --- Placeholders ------------------------------------------------------------
 step "Filling persona & hook placeholders"
 subst "$OGMA_DIR/workspace/CLAUDE.md" "{{OWNER_NAME}}" "$owner"
@@ -292,6 +302,17 @@ fi
 step "Done"
 tok="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV" | cut -d= -f2-)"
 allowed="$(grep -E '^TELEGRAM_ALLOWED_USERS=' "$ENV" | cut -d= -f2-)"
+
+say "${c_bold}Config summary${c_rst}"
+printf '  token         : %s\n' "$([ -n "$tok" ] && echo set || echo MISSING)"
+printf '  allowed chats : %s\n' "${allowed:-MISSING}"
+printf '  model         : %s\n' "$(grep -E '^OGMA_MODEL=' "$ENV" | cut -d= -f2- | sed 's/^$/(Claude Code default)/')"
+printf '  effort        : %s\n' "$(grep -E '^OGMA_EFFORT=' "$ENV" | cut -d= -f2- | sed 's/^$/(default)/')"
+printf '  fallback      : %s\n' "$(grep -E '^OGMA_FALLBACK_MODEL=' "$ENV" | cut -d= -f2- | sed 's/^$/(none)/')"
+printf '  claude CLI    : %s\n' "$([ -x "$CLAUDE_BIN" ] && echo "$CLAUDE_BIN" || echo MISSING)"
+{ [ -n "$tok" ] && [ -n "$allowed" ]; } || warn "Token and/or allowed chats missing — Ogma won't respond until both are set (re-run setup)."
+[ -x "$CLAUDE_BIN" ] || warn "claude CLI not found — set CLAUDE_BIN in .env, or install Claude Code."
+
 if [ "$HAVE_SYSTEMD" = 1 ] && [ -n "$tok" ] && [ -n "$allowed" ]; then
   if yes "Start the gateway now (systemctl --user enable --now ogma-gateway)?" "y"; then
     systemctl --user enable --now ogma-gateway && ok "Gateway started. Logs: journalctl --user -u ogma-gateway -f" || err "Failed to start — check: systemctl --user status ogma-gateway"

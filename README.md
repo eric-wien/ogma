@@ -115,6 +115,7 @@ See [`skills/README.md`](skills/README.md) for details and how to write your own
 - `/new` — start a fresh Claude session for this chat
 - `/model [name]` — show or change the model live (`sonnet`, `haiku`, `opus`, a full id, or `default`); persists to `.env`
 - `/effort [level]` — show or change reasoning effort live (`low`/`medium`/`high`/`xhigh`/`max`/`default`); persists to `.env`
+- `/fallback [name]` — model used automatically if the main one is unavailable (`none` to clear); persists to `.env`
 - `/help` — usage
 - anything else — sent to Claude
 
@@ -129,6 +130,7 @@ See [`skills/README.md`](skills/README.md) for details and how to write your own
 | `OGMA_PERMISSION_MODE` | e.g. `acceptEdits`; empty = safest | empty |
 | `OGMA_ALLOWED_TOOLS` | curated tool allow-list | empty |
 | `OGMA_MODEL` | gateway model (live-changeable via `/model`) | Claude Code default |
+| `OGMA_FALLBACK_MODEL` | model used if the primary is unavailable (live via `/fallback`) | none |
 | `OGMA_EFFORT` | reasoning effort `low`..`max` (live-changeable via `/effort`) | CLI default |
 | `OGMA_DREAM_MODEL` | nightly memory job model | `sonnet` |
 | `OGMA_OWNER_NAME` | who the briefing addresses | `you` |

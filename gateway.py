@@ -60,7 +60,8 @@ WORKDIR = cfg("WORKDIR", str(BASE / "workspace"))
 PERMISSION_MODE = cfg("PERMISSION_MODE")   # e.g. acceptEdits
 ALLOWED_TOOLS = cfg("ALLOWED_TOOLS")       # e.g. "Read WebSearch"
 MODEL = cfg("MODEL")
-EFFORT = cfg("EFFORT")  # low|medium|high|xhigh|max (empty = CLI default)
+FALLBACK_MODEL = cfg("FALLBACK_MODEL")   # auto-fallback when the primary is unavailable
+EFFORT = cfg("EFFORT").lower()           # low|medium|high|xhigh|max (empty = CLI default)
 CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", "300"))
 SESSIONS_FILE = BASE / "sessions.json"
 ENV_FILE = BASE / ".env"
@@ -170,6 +171,8 @@ def ask_claude(prompt: str, session_id: str | None) -> tuple[str, str | None]:
         cmd += ["--allowedTools", *ALLOWED_TOOLS.split()]
     if MODEL:
         cmd += ["--model", MODEL]
+    if FALLBACK_MODEL:
+        cmd += ["--fallback-model", FALLBACK_MODEL]
     if EFFORT:
         cmd += ["--effort", EFFORT]
     try:
@@ -183,7 +186,10 @@ def ask_claude(prompt: str, session_id: str | None) -> tuple[str, str | None]:
         # A bad/expired session id is the common cause — retry once fresh.
         if session_id:
             return ask_claude(prompt, None)
-        return (f"⚠️ Claude error (exit {proc.returncode}).", session_id)
+        # Surface the actual reason (e.g. unknown model / bad flag) instead of a bare code.
+        hint = next((ln.strip() for ln in (proc.stderr or "").splitlines() if ln.strip()), "")
+        msg = f"⚠️ Claude error (exit {proc.returncode})."
+        return (f"{msg} {hint[:200]}".rstrip() if hint else msg, session_id)
     try:
         out = json.loads(proc.stdout)
     except json.JSONDecodeError:
@@ -201,6 +207,7 @@ HELP_TEXT = (
     "/new — start a fresh session\n"
     "/model [name] — show or change the model (e.g. sonnet, haiku, opus, a full id, or 'default')\n"
     "/effort [level] — show or change reasoning effort (low | medium | high | xhigh | max | default)\n"
+    "/fallback [name] — model to use if the main one is unavailable ('none' to clear)\n"
     "/help — this message"
 )
 
@@ -249,6 +256,24 @@ def handle_effort(chat_id: str, arg: str) -> None:
     send(chat_id, f"✅ Effort set to {val}. Applies to your next message.")
 
 
+def handle_fallback(chat_id: str, arg: str) -> None:
+    global FALLBACK_MODEL
+    if not arg:
+        send(chat_id,
+             f"Current fallback model: {FALLBACK_MODEL or '(none)'}\n\n"
+             "Set with /fallback <name> — used automatically if the main model is unavailable "
+             "(rate limit/outage). Accepts an alias or full id; /fallback none clears it.")
+        return
+    if arg.lower() in ("none", "off", "clear", "default"):
+        FALLBACK_MODEL = ""
+        set_env_var("OGMA_FALLBACK_MODEL", "")
+        send(chat_id, "✅ Fallback model cleared.")
+        return
+    FALLBACK_MODEL = arg
+    set_env_var("OGMA_FALLBACK_MODEL", arg)
+    send(chat_id, f"✅ Fallback model set to {arg}.")
+
+
 def handle(chat_id: str, text: str, sessions: dict[str, str]) -> None:
     stripped = text.strip()
     parts = stripped.split(maxsplit=1)
@@ -269,6 +294,9 @@ def handle(chat_id: str, text: str, sessions: dict[str, str]) -> None:
     if cmd == "/effort":
         handle_effort(chat_id, arg)
         return
+    if cmd == "/fallback":
+        handle_fallback(chat_id, arg)
+        return
 
     # Show "typing…" immediately on receipt, synchronously, so it is guaranteed
     # to reach Telegram before the (blocking) Claude call starts — then the
@@ -288,10 +316,15 @@ def handle(chat_id: str, text: str, sessions: dict[str, str]) -> None:
 
 
 def main() -> None:
+    global EFFORT
     if not TOKEN:
         sys.exit("TELEGRAM_BOT_TOKEN is not set (see .env.example).")
     if not Path(CLAUDE_BIN).exists():
         sys.exit(f"claude binary not found at {CLAUDE_BIN}")
+    # Don't let a bad hand-edited effort value fail every message — ignore it.
+    if EFFORT and EFFORT not in EFFORT_LEVELS:
+        log(f"ignoring invalid OGMA_EFFORT={EFFORT!r} (use one of {', '.join(EFFORT_LEVELS)})")
+        EFFORT = ""
     sessions = load_sessions()
     log(f"Ogma up. workdir={WORKDIR} allowed={ALLOWED or '(none — locked down)'}")
     offset = 0
