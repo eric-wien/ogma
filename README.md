@@ -135,7 +135,7 @@ See [`skills/README.md`](skills/README.md) for details and how to write your own
 ## Self-management (`ogmactl`)
 `bin/ogmactl` is the **only** shell command the bot is permitted to run (a fixed whitelist of
 subcommands — granting it does *not* grant arbitrary shell): `status`, `logs [N]`, `restart`,
-`pihole`, `health`, `ticket <text>`, `tickets`. To let the bot use it, add the scoped rule to
+`health`, `ticket <text>`, `tickets`. To let the bot use it, add the scoped rule to
 `OGMA_ALLOWED_TOOLS` (see `.env.example`).
 
 ## Scheduled routines (optional)
@@ -145,14 +145,15 @@ subcommands — granting it does *not* grant arbitrary shell): `status`, `logs [
 - **`bin/dream`** — nightly, silent memory consolidation (rolling `yesterday.md` + long-term
   memory tidy). Snapshots memory to `memory-backups/` first.
 - **`bin/health-check`** — every ~5 min, alerts to Telegram if CPU temp / load / disk / free RAM
-  cross thresholds (all `HEALTH_*`-overridable). Pure shell; degrades cleanly off-Pi.
+  cross thresholds (all `HEALTH_*`-overridable). Pure shell; the temp check skips cleanly on hosts
+  that don't expose it.
 
 ## What's not included / known limitations
 - **Single brain.** The persona, workspace, and memory are shared — adding several chat IDs to the
   allow-list gives them a *shared* assistant and memory, not isolated per-user accounts. True
   multi-user isolation is a future feature.
-- Tuned for a small always-on Linux box (developed on a Raspberry Pi); some health/`pihole` bits
-  are Pi-flavoured but skip cleanly elsewhere.
+- Tuned for a small always-on Linux box; the optional health checks read standard Linux metrics and
+  skip anything a given host doesn't expose.
 
 ## License
 [MIT](LICENSE) © 2026 @eric.wien. Provided as-is, without warranty. Inspired by Nous Research's

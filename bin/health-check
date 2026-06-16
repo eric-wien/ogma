@@ -8,8 +8,8 @@
 #
 # Runs every ~5 min from ogma-health.timer (systemd --user). No Claude in the
 # loop — pure shell, cheap, safe to run often. Thresholds overridable via env.
-# (CPU-temp reading is Raspberry-Pi-style; it's skipped cleanly on hosts without
-# /sys/class/thermal/thermal_zone0/temp.)
+# (The CPU-temp check reads the standard Linux thermal sysfs and is skipped
+# cleanly on hosts without /sys/class/thermal/thermal_zone0/temp.)
 set -uo pipefail
 
 BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

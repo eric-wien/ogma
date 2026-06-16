@@ -14,7 +14,7 @@ ENV="$BASE/.env"
 TICKETS="$BASE/tickets"
 
 usage() {
-  echo "ogmactl: allowed commands — status | logs [N] | restart | pihole | health | ticket <text> | tickets"
+  echo "ogmactl: allowed commands — status | logs [N] | restart | health | ticket <text> | tickets"
 }
 
 # Read a config value (OGMA_<name>) from .env.
@@ -47,20 +47,12 @@ case "$cmd" in
       echo "⚠️ Could not schedule restart (systemd-run --user failed)."; exit 1
     fi
     ;;
-  pihole)
-    if command -v pihole >/dev/null 2>&1; then
-      pihole status 2>&1 | grep -v 'utils.sh' | head -20
-    else
-      echo "pihole CLI not found on this host"
-    fi
-    ;;
   health)
     echo "uptime  : $(uptime -p 2>/dev/null || cut -d. -f1 /proc/uptime)"
     echo "load    : $(cut -d' ' -f1-3 /proc/loadavg)"
-    temp="$(vcgencmd measure_temp 2>/dev/null | sed 's/temp=//')"
-    echo "temp    : ${temp:-n/a}"
-    thr="$(vcgencmd get_throttled 2>/dev/null | sed 's/throttled=//')"
-    if [ "$thr" = "0x0" ]; then echo "throttle: $thr (healthy)"; else echo "throttle: ${thr:-n/a}"; fi
+    if [ -r /sys/class/thermal/thermal_zone0/temp ]; then
+      echo "temp    : $(( $(cat /sys/class/thermal/thermal_zone0/temp) / 1000 ))°C"
+    fi
     echo "memory  : $(free -h | awk 'NR==2{print $3" used / "$2}')"
     echo "disk /  : $(df -h / | awk 'NR==2{print $3" used / "$2" ("$5")"}')"
     ;;

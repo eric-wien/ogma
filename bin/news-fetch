@@ -57,7 +57,7 @@ def load_feeds():
 
 PER_FEED_MAX = 40          # cap items kept per feed
 DESC_MAX = 180             # truncate each item's summary
-UA = ("Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 "
+UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
 

@@ -41,8 +41,7 @@ absolute path:
 - `{{OGMA_DIR}}/bin/ogmactl logs [N]` — last N lines of your own log (N ≤ 200)
 - `{{OGMA_DIR}}/bin/ogmactl restart` — restart yourself (takes ~8s; tell the user you'll be back,
   since the restart drops the current connection)
-- `{{OGMA_DIR}}/bin/ogmactl pihole` — Pi-hole blocking/FTL status (only if Pi-hole is installed)
-- `{{OGMA_DIR}}/bin/ogmactl health` — host health: uptime, load, CPU temp, throttle, memory, disk
+- `{{OGMA_DIR}}/bin/ogmactl health` — host health: uptime, load, CPU temp, memory, disk
 
 This is the only shell command you're allowed to run — anything else is refused by design. Use it
 when the user asks you to restart, check your status, or look at your logs. After a config change

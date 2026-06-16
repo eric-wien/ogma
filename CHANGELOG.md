@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] — 2026-06-16
+
+### Changed
+- Removed Raspberry-Pi-specific functionality for a cleaner, host-agnostic tool:
+  - Dropped the `pihole` subcommand from `ogmactl`.
+  - `ogmactl health` no longer shells out to `vcgencmd` (Pi firmware tool) — CPU temp now reads the
+    standard Linux thermal sysfs, and the Pi-only "throttle" line is gone.
+  - De-Pi'd wording across docs/comments and switched `news-fetch` to a neutral User-Agent.
+- `bin/health-check` is unchanged in behaviour: its temp check reads the standard Linux thermal
+  sysfs and still skips cleanly on hosts that don't expose it.
+
 ## [0.1.0] — 2026-06-16
 
 First public release. A minimal, self-hosted bridge from Telegram to Claude Code.
@@ -34,4 +45,5 @@ First public release. A minimal, self-hosted bridge from Telegram to Claude Code
 - Single shared brain — multiple allow-listed chats share one persona/workspace/memory. Per-user
   isolation is planned (see issues).
 
+[0.1.1]: https://github.com/eric-wien/ogma/releases/tag/v0.1.1
 [0.1.0]: https://github.com/eric-wien/ogma/releases/tag/v0.1.0
