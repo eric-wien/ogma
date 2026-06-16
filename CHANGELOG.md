@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] — 2026-06-16
+
+### Added
+- **Model & reasoning-effort selection.**
+  - `bin/setup` now prompts for a model (curated aliases `sonnet`/`haiku`/`opus`, `default`, or any
+    full model id) and a reasoning-effort level — with a best-effort live model list when
+    `ANTHROPIC_API_KEY` is set (Claude Code subscription auth can't list models, so it falls back to
+    the curated choices).
+  - New chat commands **`/model [name]`** and **`/effort [level]`** change them live and persist to
+    `.env` (mirrors Claude Code's built-in `/model`).
+  - New **`OGMA_EFFORT`** setting; the gateway passes `--effort` to the `claude` CLI alongside
+    `--model`.
+
 ## [0.2.1] — 2026-06-16
 
 ### Fixed
@@ -63,6 +76,7 @@ First public release. A minimal, self-hosted bridge from Telegram to Claude Code
 - Single shared brain — multiple allow-listed chats share one persona/workspace/memory. Per-user
   isolation is planned (see issues).
 
+[0.3.0]: https://github.com/eric-wien/ogma/releases/tag/v0.3.0
 [0.2.1]: https://github.com/eric-wien/ogma/releases/tag/v0.2.1
 [0.2.0]: https://github.com/eric-wien/ogma/releases/tag/v0.2.0
 [0.1.1]: https://github.com/eric-wien/ogma/releases/tag/v0.1.1

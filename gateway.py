@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -59,8 +60,11 @@ WORKDIR = cfg("WORKDIR", str(BASE / "workspace"))
 PERMISSION_MODE = cfg("PERMISSION_MODE")   # e.g. acceptEdits
 ALLOWED_TOOLS = cfg("ALLOWED_TOOLS")       # e.g. "Read WebSearch"
 MODEL = cfg("MODEL")
+EFFORT = cfg("EFFORT")  # low|medium|high|xhigh|max (empty = CLI default)
 CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", "300"))
 SESSIONS_FILE = BASE / "sessions.json"
+ENV_FILE = BASE / ".env"
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 API = f"https://api.telegram.org/bot{TOKEN}"
 TG_MAX = 4000  # Telegram hard limit is 4096; leave headroom
@@ -84,6 +88,29 @@ def load_sessions() -> dict[str, str]:
 
 def save_sessions(s: dict[str, str]) -> None:
     SESSIONS_FILE.write_text(json.dumps(s, indent=2))
+
+
+def set_env_var(key: str, value: str) -> None:
+    """Persist KEY=value into .env (updating an existing/commented line or appending).
+
+    Lets runtime changes (e.g. /model, /effort) survive a restart. Best-effort.
+    """
+    try:
+        lines = ENV_FILE.read_text().splitlines() if ENV_FILE.exists() else []
+    except OSError:
+        lines = []
+    pat = re.compile(rf"^#?\s*{re.escape(key)}=")
+    repl, found = f"{key}={value}", False
+    for i, ln in enumerate(lines):
+        if pat.match(ln):
+            lines[i], found = repl, True
+            break
+    if not found:
+        lines.append(repl)
+    try:
+        ENV_FILE.write_text("\n".join(lines) + "\n")
+    except OSError as e:  # noqa: BLE001
+        log("set_env_var failed:", e)
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +170,8 @@ def ask_claude(prompt: str, session_id: str | None) -> tuple[str, str | None]:
         cmd += ["--allowedTools", *ALLOWED_TOOLS.split()]
     if MODEL:
         cmd += ["--model", MODEL]
+    if EFFORT:
+        cmd += ["--effort", EFFORT]
     try:
         proc = subprocess.run(
             cmd, cwd=WORKDIR, capture_output=True, text=True, timeout=CLAUDE_TIMEOUT
@@ -167,15 +196,78 @@ def ask_claude(prompt: str, session_id: str | None) -> tuple[str, str | None]:
 # ---------------------------------------------------------------------------
 # Message handling
 # ---------------------------------------------------------------------------
+HELP_TEXT = (
+    "Ogma here. Just talk to me.\n"
+    "/new — start a fresh session\n"
+    "/model [name] — show or change the model (e.g. sonnet, haiku, opus, a full id, or 'default')\n"
+    "/effort [level] — show or change reasoning effort (low | medium | high | xhigh | max | default)\n"
+    "/help — this message"
+)
+
+
+def handle_model(chat_id: str, arg: str) -> None:
+    global MODEL
+    if not arg:
+        send(chat_id,
+             f"Current model: {MODEL or '(Claude Code default)'}\n\n"
+             "Change with /model <name>:\n"
+             "• sonnet — fast, good default on a Pi (claude-sonnet-4-6)\n"
+             "• haiku — fastest / cheapest (claude-haiku-4-5)\n"
+             "• opus — most capable, slower (claude-opus-4-8)\n"
+             "• <full model id> — anything Claude Code accepts\n"
+             "• default — reset to the Claude Code default")
+        return
+    if arg.lower() in ("default", "reset", "none"):
+        MODEL = ""
+        set_env_var("OGMA_MODEL", "")
+        send(chat_id, "✅ Model reset to the Claude Code default. Applies to your next message.")
+        return
+    MODEL = arg
+    set_env_var("OGMA_MODEL", arg)
+    send(chat_id, f"✅ Model set to {arg}. Applies to your next message.")
+
+
+def handle_effort(chat_id: str, arg: str) -> None:
+    global EFFORT
+    if not arg:
+        send(chat_id,
+             f"Current effort: {EFFORT or '(default)'}\n\n"
+             "Change with /effort <level>: low | medium | high | xhigh | max | default\n"
+             "Higher = more thorough but slower/pricier; lower = snappier.")
+        return
+    val = arg.lower()
+    if val in ("default", "reset", "none"):
+        EFFORT = ""
+        set_env_var("OGMA_EFFORT", "")
+        send(chat_id, "✅ Effort reset to default. Applies to your next message.")
+        return
+    if val not in EFFORT_LEVELS:
+        send(chat_id, f"⚠️ Unknown effort '{arg}'. Use: {', '.join(EFFORT_LEVELS)} — or default.")
+        return
+    EFFORT = val
+    set_env_var("OGMA_EFFORT", val)
+    send(chat_id, f"✅ Effort set to {val}. Applies to your next message.")
+
+
 def handle(chat_id: str, text: str, sessions: dict[str, str]) -> None:
-    cmd = text.strip().lower()
+    stripped = text.strip()
+    parts = stripped.split(maxsplit=1)
+    cmd = parts[0].lower() if parts else ""
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
     if cmd in ("/start", "/help"):
-        send(chat_id, "Ogma here. Just talk to me. /new starts a fresh session.")
+        send(chat_id, HELP_TEXT)
         return
     if cmd == "/new":
         sessions.pop(chat_id, None)
         save_sessions(sessions)
         send(chat_id, "🧹 Fresh session.")
+        return
+    if cmd == "/model":
+        handle_model(chat_id, arg)
+        return
+    if cmd == "/effort":
+        handle_effort(chat_id, arg)
         return
 
     # Show "typing…" immediately on receipt, synchronously, so it is guaranteed

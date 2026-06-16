@@ -82,6 +82,44 @@ set_env OGMA_OWNER_NAME "$owner"; ok "Owner name set to: $owner"
 loc="$(ask "Weather location for the briefing, e.g. Vienna (blank = auto by IP)")"
 [ -n "$loc" ] && { set_env OGMA_WEATHER_LOC "$loc"; ok "Weather location: $loc"; }
 
+# --- Model & reasoning effort ------------------------------------------------
+step "Model & reasoning effort"
+# Live model list needs an API key; Claude Code subscription auth can't list models,
+# so this is best-effort — otherwise use the curated aliases (or type any full id).
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  live="$(curl -sS -m 12 https://api.anthropic.com/v1/models \
+            -H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01" 2>/dev/null \
+          | "$PY" -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for m in d.get("data", []):
+    print("   -", m.get("id"))
+' 2>/dev/null)"
+  [ -n "$live" ] && { say "Models available to your API key:"; printf '%s\n' "$live"; }
+fi
+say "Pick a model — Claude Code aliases (sonnet is a good default on a Pi):"
+say "  ${c_dim}sonnet = fast · haiku = fastest · opus = most capable but slower · default = Claude Code default · or type a full model id${c_rst}"
+m_choice="$(ask "Model" "sonnet")"
+case "$(printf '%s' "$m_choice" | tr '[:upper:]' '[:lower:]')" in
+  sonnet)     model_id="claude-sonnet-4-6" ;;
+  haiku)      model_id="claude-haiku-4-5" ;;
+  opus)       model_id="claude-opus-4-8" ;;
+  default|"") model_id="" ;;
+  *)          model_id="$m_choice" ;;
+esac
+set_env OGMA_MODEL "$model_id"; ok "Model: ${model_id:-(Claude Code default)}"
+
+eff="$(ask "Reasoning effort — low/medium/high/xhigh/max (blank = default)")"
+effl="$(printf '%s' "$eff" | tr '[:upper:]' '[:lower:]')"
+case "$effl" in
+  low|medium|high|xhigh|max) set_env OGMA_EFFORT "$effl"; ok "Effort: $effl" ;;
+  ""|default)                set_env OGMA_EFFORT "";     ok "Effort: default" ;;
+  *)                         warn "Unknown effort '$eff' — leaving at default."; set_env OGMA_EFFORT "" ;;
+esac
+
 # --- Placeholders ------------------------------------------------------------
 step "Filling persona & hook placeholders"
 subst "$OGMA_DIR/workspace/CLAUDE.md" "{{OWNER_NAME}}" "$owner"
