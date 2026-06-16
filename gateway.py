@@ -66,6 +66,13 @@ CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", "300"))
 SESSIONS_FILE = BASE / "sessions.json"
 ENV_FILE = BASE / ".env"
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+# Max concurrent Claude runs. Default 1 — small boxes (e.g. a Pi) OOM if several run at once.
+MAX_CONCURRENT = max(1, int(cfg("MAX_CONCURRENT", "1") or "1"))
+
+_inflight: set = set()                       # chat_ids with a message currently being handled
+_inflight_lock = threading.Lock()
+_sessions_lock = threading.Lock()            # guards the shared sessions dict + file
+_run_sem = threading.Semaphore(MAX_CONCURRENT)  # bounds concurrent `claude` invocations
 
 API = f"https://api.telegram.org/bot{TOKEN}"
 TG_MAX = 4000  # Telegram hard limit is 4096; leave headroom
@@ -284,8 +291,9 @@ def handle(chat_id: str, text: str, sessions: dict[str, str]) -> None:
         send(chat_id, HELP_TEXT)
         return
     if cmd == "/new":
-        sessions.pop(chat_id, None)
-        save_sessions(sessions)
+        with _sessions_lock:
+            sessions.pop(chat_id, None)
+            save_sessions(sessions)
         send(chat_id, "🧹 Fresh session.")
         return
     if cmd == "/model":
@@ -306,13 +314,42 @@ def handle(chat_id: str, text: str, sessions: dict[str, str]) -> None:
     typer = threading.Thread(target=keep_typing, args=(chat_id, stop), daemon=True)
     typer.start()
     try:
-        reply, sid = ask_claude(text, sessions.get(chat_id))
+        with _sessions_lock:
+            prior = sessions.get(chat_id)
+        with _run_sem:  # bound concurrent claude runs (RAM safety on small boxes)
+            reply, sid = ask_claude(text, prior)
     finally:
         stop.set()
-    if sid and sid != sessions.get(chat_id):
-        sessions[chat_id] = sid
-        save_sessions(sessions)
+    if sid:
+        with _sessions_lock:
+            if sid != sessions.get(chat_id):
+                sessions[chat_id] = sid
+                save_sessions(sessions)
     send(chat_id, reply)
+
+
+def validate_token() -> tuple[bool, str]:
+    """Check the bot token via getMe so a bad token is an obvious one-line log,
+    not an endless stream of 401s from getUpdates."""
+    try:
+        r = tg("getMe", {}, timeout=15)
+    except Exception as e:  # noqa: BLE001
+        return (False, str(e))
+    if r.get("ok"):
+        return (True, (r.get("result") or {}).get("username", "?"))
+    return (False, r.get("description", "not ok"))
+
+
+def _worker(chat_id: str, text: str, sessions: dict[str, str]) -> None:
+    """Handle one message in its own thread, then release the per-chat slot."""
+    try:
+        handle(chat_id, text, sessions)
+    except Exception as e:  # noqa: BLE001
+        log("handler error:", e)
+        send(chat_id, "⚠️ Something broke handling that. Logged it.")
+    finally:
+        with _inflight_lock:
+            _inflight.discard(chat_id)
 
 
 def main() -> None:
@@ -325,8 +362,14 @@ def main() -> None:
     if EFFORT and EFFORT not in EFFORT_LEVELS:
         log(f"ignoring invalid OGMA_EFFORT={EFFORT!r} (use one of {', '.join(EFFORT_LEVELS)})")
         EFFORT = ""
+    ok_token, info = validate_token()
+    if ok_token:
+        log(f"token OK — bot @{info}")
+    else:
+        log(f"⚠️ TOKEN CHECK FAILED ({info}). Fix TELEGRAM_BOT_TOKEN in .env and restart.")
     sessions = load_sessions()
-    log(f"Ogma up. workdir={WORKDIR} allowed={ALLOWED or '(none — locked down)'}")
+    log(f"Ogma up. workdir={WORKDIR} allowed={ALLOWED or '(none — locked down)'} "
+        f"max_concurrent={MAX_CONCURRENT}")
     offset = 0
     while True:
         try:
@@ -348,11 +391,18 @@ def main() -> None:
                               "add it to TELEGRAM_ALLOWED_USERS to enable access.")
                 continue
             log(f"[{chat_id}] {text[:80]}")
-            try:
-                handle(chat_id, text, sessions)
-            except Exception as e:  # noqa: BLE001
-                log("handler error:", e)
-                send(chat_id, "⚠️ Something broke handling that. Logged it.")
+            # Concurrency guard: one in-flight message per chat. Drop a second one
+            # (with a notice) rather than overlapping runs. Handle in a thread so a
+            # long run in one chat doesn't block polling or other chats.
+            with _inflight_lock:
+                busy = chat_id in _inflight
+                if not busy:
+                    _inflight.add(chat_id)
+            if busy:
+                send(chat_id, "⏳ Still working on your previous message — give me a moment, "
+                              "then resend if needed.")
+                continue
+            threading.Thread(target=_worker, args=(chat_id, text, sessions), daemon=True).start()
 
 
 if __name__ == "__main__":

@@ -50,6 +50,43 @@ open(path, "w").write("\n".join(out) + "\n")
 PY
 }
 
+# Non-interactive health/config check — `bin/setup --check`. Changes nothing.
+do_check() {
+  local tok allowed cb u problems=0
+  step "Ogma config check  ${c_dim}($OGMA_DIR)${c_rst}"
+  tok="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV" 2>/dev/null | cut -d= -f2-)"
+  allowed="$(grep -E '^TELEGRAM_ALLOWED_USERS=' "$ENV" 2>/dev/null | cut -d= -f2-)"
+  cb="$(command -v claude || echo "$HOME/.local/bin/claude")"
+  [ -f "$ENV" ] && ok ".env present" || { err ".env missing — run bin/setup"; problems=1; }
+  [ -n "$tok" ] && ok "token set" || { err "token MISSING"; problems=1; }
+  [ -n "$allowed" ] && ok "allowed chats: $allowed" || { err "allowed chats MISSING"; problems=1; }
+  printf '  model     : %s\n' "$(grep -E '^OGMA_MODEL=' "$ENV" 2>/dev/null | cut -d= -f2- | sed 's/^$/(Claude Code default)/')"
+  printf '  effort    : %s\n' "$(grep -E '^OGMA_EFFORT=' "$ENV" 2>/dev/null | cut -d= -f2- | sed 's/^$/(default)/')"
+  printf '  fallback  : %s\n' "$(grep -E '^OGMA_FALLBACK_MODEL=' "$ENV" 2>/dev/null | cut -d= -f2- | sed 's/^$/(none)/')"
+  [ -x "$cb" ] && ok "claude CLI: $cb" || { err "claude CLI missing ($cb)"; problems=1; }
+  if [ -n "$tok" ] && command -v curl >/dev/null; then
+    u="$(curl -sS -m 12 "https://api.telegram.org/bot${tok}/getMe" 2>/dev/null | "$PY" -c 'import sys,json
+try: d=json.load(sys.stdin)
+except Exception: print("?"); raise SystemExit
+print(("OK "+((d.get("result") or {}).get("username") or "?")) if d.get("ok") else "BAD")' 2>/dev/null)"
+    case "$u" in "OK "*) ok "token valid — bot @${u#OK }";; *) err "token REJECTED by Telegram (getMe failed)"; problems=1;; esac
+  fi
+  if command -v systemctl >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then
+    printf '  service   : %s\n' "$(systemctl --user is-active ogma-gateway 2>/dev/null || echo inactive)"
+  fi
+  for s in tickets session-search daily-briefing; do
+    [ -e "$HOME/.claude/skills/$s" ] && ok "skill: $s" || warn "skill not installed: $s"
+  done
+  say ""
+  [ "$problems" = 0 ] && say "${c_grn}All good.${c_rst}" || say "${c_yel}Issues found — see above.${c_rst}"
+  return "$problems"
+}
+
+case "${1:-}" in
+  --check|check) do_check; exit $? ;;
+  -h|--help) echo "Usage: bin/setup [--check]"; exit 0 ;;
+esac
+
 say "${c_bold}Ogma setup${c_rst}  ${c_dim}($OGMA_DIR)${c_rst}"
 say "This configures your own copy. Nothing is sent anywhere; secrets you enter stay on this box."
 
@@ -321,4 +358,5 @@ else
   say "Next: once token + allowed users are set, start it:"
   say "  ${c_dim}systemctl --user enable --now ogma-gateway${c_rst}   (or: python3 $OGMA_DIR/gateway.py)"
 fi
-say "\nRead ${c_bold}docs/workflow.md${c_rst} for how Ogma is meant to be used. Enjoy."
+say ""
+say "Read ${c_bold}docs/workflow.md${c_rst} for how Ogma is meant to be used. Enjoy."

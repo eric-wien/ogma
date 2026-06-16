@@ -60,7 +60,9 @@ cd ~/ogma
 bin/setup        # interactive: token, persona, skills, systemd, chat-ID — all guided
 ```
 The script walks you through everything below and never transmits anything off your machine. The
-manual steps are documented here too, in case you prefer to do it by hand.
+manual steps are documented here too, in case you prefer to do it by hand. To re-check an existing
+install without changing anything, run `bin/setup --check` — it validates your token, allow-list,
+model/effort/fallback, the `claude` CLI, the service, and installed skills.
 
 ### Manual setup
 
@@ -126,6 +128,7 @@ See [`skills/README.md`](skills/README.md) for details and how to write your own
 | `TELEGRAM_ALLOWED_USERS` | comma-separated allowed chat IDs (**required**) | — |
 | `CLAUDE_BIN` | path to the `claude` CLI | `~/.local/bin/claude` |
 | `CLAUDE_TIMEOUT` | per-message timeout (seconds) | `300` |
+| `OGMA_MAX_CONCURRENT` | max concurrent Claude runs across chats (raise only on a roomy host) | `1` |
 | `OGMA_WORKDIR` | Claude's working dir | `./workspace` |
 | `OGMA_PERMISSION_MODE` | e.g. `acceptEdits`; empty = safest | empty |
 | `OGMA_ALLOWED_TOOLS` | curated tool allow-list | empty |

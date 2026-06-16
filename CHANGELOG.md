@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] — 2026-06-16
+
+### Added
+- **Concurrency guard.** Messages are now handled in per-chat worker threads with **one in-flight
+  message per chat** (a second is dropped with a notice rather than overlapping), plus a global
+  semaphore that caps concurrent `claude` runs via **`OGMA_MAX_CONCURRENT`** (default 1 — protects
+  RAM on small boxes like a Pi). A long run in one chat no longer blocks polling or other chats.
+- **`bin/setup --check`** — a non-interactive doctor that validates the token (via getMe), allow-list,
+  model/effort/fallback, the `claude` CLI, the systemd service, and installed skills. Changes nothing.
+
+### Changed
+- The gateway validates the bot token at startup — one clear `token OK` / `TOKEN CHECK FAILED` log
+  line — instead of emitting a stream of 401s from getUpdates when the token is wrong.
+
 ## [0.4.0] — 2026-06-16
 
 ### Added
@@ -92,6 +106,7 @@ First public release. A minimal, self-hosted bridge from Telegram to Claude Code
 - Single shared brain — multiple allow-listed chats share one persona/workspace/memory. Per-user
   isolation is planned (see issues).
 
+[0.5.0]: https://github.com/eric-wien/ogma/releases/tag/v0.5.0
 [0.4.0]: https://github.com/eric-wien/ogma/releases/tag/v0.4.0
 [0.3.0]: https://github.com/eric-wien/ogma/releases/tag/v0.3.0
 [0.2.1]: https://github.com/eric-wien/ogma/releases/tag/v0.2.1
