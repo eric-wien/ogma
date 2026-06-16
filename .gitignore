@@ -1,0 +1,16 @@
+# Secrets — never commit
+.env
+
+# Runtime state / artifacts
+sessions.json
+*.log
+state/
+memory-backups/
+
+# Tickets are local workflow, not shipped content
+tickets/*.md
+tickets/done/*.md
+
+# Python
+__pycache__/
+*.pyc

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Ogma morning briefing daily
+
+[Timer]
+OnCalendar=*-*-* 07:00:00
+Persistent=true
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target

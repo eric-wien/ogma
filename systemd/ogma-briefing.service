@@ -1,0 +1,11 @@
+[Unit]
+Description=Ogma morning briefing (generate + deliver to Telegram)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={{OGMA_DIR}}/bin/briefing
+StandardOutput=append:{{OGMA_DIR}}/briefing.log
+StandardError=append:{{OGMA_DIR}}/briefing.log
+Environment=PATH={{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin

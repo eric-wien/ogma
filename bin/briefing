@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# briefing — a morning briefing. Gathers data deterministically (RSS news +
+# weather), lets Claude cluster/summarise it, and delivers to Telegram.
+# Run by ogma-briefing.timer (or manually). Self-contained for headless runs.
+#
+# Config (in .env, all optional):
+#   OGMA_OWNER_NAME    who the briefing is for         (default: "you")
+#   OGMA_WEATHER_LOC   wttr.in location, e.g. "Vienna" (default: empty = geolocate by IP)
+#   OGMA_RSS_FEEDS     feeds for news-fetch            (see bin/news-fetch)
+#   OGMA_MODEL         Claude model                    (default: sonnet)
+# Customise the prompt below for your own tone, topics, and language.
+set -uo pipefail
+
+export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN="$BASE/bin"
+WORKDIR="$BASE/workspace"
+ENV="$BASE/.env"
+STATE="$BASE/state"
+LAST="$STATE/last-briefing"          # epoch of the previous successful briefing
+mkdir -p "$STATE"
+cd "$WORKDIR" || exit 1
+
+# Read a config value (OGMA_<name>) from .env.
+cfg() {
+  grep -E "^OGMA_${1}=" "$ENV" 2>/dev/null | cut -d= -f2-
+}
+
+model="$(cfg MODEL)"; model="${model:-sonnet}"
+owner="$(cfg OWNER_NAME)"; owner="${owner:-you}"
+loc="$(cfg WEATHER_LOC)"   # empty => wttr.in geolocates by IP
+now="$(date +%s)"
+
+# "Since the last briefing" — fall back to 24h if there is no prior run.
+if [ -f "$LAST" ] && cutoff="$(cat "$LAST")" && [ -n "$cutoff" ]; then
+  :
+else
+  cutoff=$(( now - 86400 ))
+fi
+# Safety: never look back more than 3 days (e.g. after long downtime).
+min_cutoff=$(( now - 259200 ))
+[ "$cutoff" -lt "$min_cutoff" ] && cutoff="$min_cutoff"
+
+# --- Weather (deterministic; don't rely on web tools) ---
+weather="$(curl -sS -m 15 "https://wttr.in/${loc}?format=%l:+%c+%t,+feels+%f,+precip+%p,+wind+%w&m" 2>/dev/null)"
+case "$weather" in ""|*Unknown*|*ERROR*|*"<"*) weather="(weather unavailable)";; esac
+
+# --- News digest since last briefing ---
+digest="$("$BIN/news-fetch" "$cutoff" 2>/dev/null)"
+[ -n "$digest" ] || digest="(news feed fetch returned nothing)"
+
+read -r -d '' prompt <<EOF
+You are writing a morning briefing for $owner, delivered as a single Telegram message. Today is
+$(date '+%A, %-d %B %Y'). Be tight and phone-readable — it's skimmed over coffee.
+
+WEATHER (already fetched, use as-is, one line):
+$weather
+
+NEWS — these are the real headlines from the configured feeds, published SINCE the last briefing.
+Times are local. Work ONLY from this list — do NOT web-search or invent anything; if it's not
+here, it didn't happen.
+
+$digest
+
+HOW TO WRITE THE BRIEFING:
+1. Start with one header line: date + the weather line.
+2. Then the news, and this is the point: DO NOT list every headline. Synthesise.
+   - Lead with the stories that RECUR across multiple sources — cross-source repetition signals
+     what actually matters today.
+   - Then add a few genuinely OUTSTANDING single items (big, surprising, or important).
+   - CLUSTER by broad topic with short headers; omit a cluster if there's nothing worth saying.
+   - 1–2 sentences per item, in your own words. Aggregate related items rather than repeating them.
+3. Keep the whole thing well under ~20 lines. No fluff, no "here is your briefing" preamble.
+4. Reply in the user's language. Output ONLY the briefing text, ready to send.
+
+Optionally end with one short line on anything time-sensitive from memory (check for project notes),
+but only if genuinely relevant.
+EOF
+
+out="$(claude -p "$prompt" \
+        --model "$model" \
+        --allowedTools "Read Glob Grep" \
+        --add-dir "$WORKDIR" \
+        --output-format json 2>/dev/null \
+      | python3 -c 'import sys,json; print(json.load(sys.stdin).get("result","").strip())' 2>/dev/null)"
+
+if [ -z "$out" ]; then
+  echo "$(date '+%F %T') briefing FAILED to generate" >&2
+  [ "${BRIEFING_DRYRUN:-0}" = 1 ] || "$BIN/tg-send" "⚠️ Morning briefing failed to generate ($(date '+%H:%M'))."
+  exit 1
+fi
+
+echo "$(date '+%F %T') briefing generated (${#out} chars, news window since $(date -d @"$cutoff" '+%F %H:%M'))" >&2
+
+# Dry run: print to stdout, don't send, don't advance the window.
+if [ "${BRIEFING_DRYRUN:-0}" = 1 ]; then
+  printf '%s\n' "$out"
+  exit 0
+fi
+
+if "$BIN/tg-send" "$out"; then
+  echo "$now" > "$LAST"     # only advance the window after a successful send
+fi

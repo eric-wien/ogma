@@ -1,0 +1,21 @@
+[Unit]
+Description=Ogma Telegram gateway (Claude Code personal assistant)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{OGMA_DIR}}
+ExecStart=/usr/bin/python3 {{OGMA_DIR}}/gateway.py
+StandardOutput=append:{{OGMA_DIR}}/gateway.log
+StandardError=append:{{OGMA_DIR}}/gateway.log
+Restart=on-failure
+RestartSec=5
+# Make sure the claude binary's dir is on PATH for the service
+Environment=PATH={{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

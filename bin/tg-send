@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# tg-send — push a message to the Ogma Telegram chat(s).
+# Reusable delivery for any scheduled routine. Message comes from $1 or stdin.
+# Reads token + allowed chat IDs straight from the gateway's .env.
+set -uo pipefail
+
+BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV="$BASE/.env"
+tok="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV" | cut -d= -f2-)"
+users="$(grep -E '^TELEGRAM_ALLOWED_USERS=' "$ENV" | cut -d= -f2- | tr ',' ' ')"
+[ -n "$tok" ]   || { echo "tg-send: no TELEGRAM_BOT_TOKEN in .env" >&2; exit 1; }
+[ -n "$users" ] || { echo "tg-send: no TELEGRAM_ALLOWED_USERS in .env" >&2; exit 1; }
+
+msg="${1:-$(cat)}"
+[ -n "$msg" ] || { echo "tg-send: empty message" >&2; exit 1; }
+msg="${msg:0:4000}"   # stay under Telegram's 4096-char limit
+
+rc=0
+for chat in $users; do
+  curl -sS -m 20 "https://api.telegram.org/bot${tok}/sendMessage" \
+    --data-urlencode "chat_id=${chat}" \
+    --data-urlencode "text=${msg}" >/dev/null || rc=1
+done
+exit $rc

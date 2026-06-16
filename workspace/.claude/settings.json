@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{OGMA_DIR}}/hooks/persist-nudge.py",
+            "timeout": 10,
+            "statusMessage": "Checking for anything worth remembering…"
+          }
+        ]
+      }
+    ]
+  }
+}

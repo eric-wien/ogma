@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# setup — interactive first-time installer for Ogma.
+#
+# Walks a new user through configuring THEIR OWN copy: creating .env, pasting their
+# Telegram bot token, filling persona/hook placeholders, installing skills, and
+# (optionally) installing the systemd user services. Ships no credentials — every
+# secret is entered by the user here. Safe to re-run; it won't clobber an existing
+# .env without asking.
+set -uo pipefail
+
+OGMA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV="$OGMA_DIR/.env"
+EXAMPLE="$OGMA_DIR/.env.example"
+PY="python3"
+
+c_bold=$'\033[1m'; c_dim=$'\033[2m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_red=$'\033[31m'; c_rst=$'\033[0m'
+say()  { printf '%s\n' "$*"; }
+step() { printf '\n%s==> %s%s\n' "$c_bold" "$*" "$c_rst"; }
+ok()   { printf '%s  ✓ %s%s\n' "$c_grn" "$*" "$c_rst"; }
+warn() { printf '%s  ! %s%s\n' "$c_yel" "$*" "$c_rst"; }
+err()  { printf '%s  ✗ %s%s\n' "$c_red" "$*" "$c_rst"; }
+ask()  { local p="$1" d="${2:-}" a; if [ -n "$d" ]; then read -r -p "$p [$d]: " a || true; printf '%s' "${a:-$d}"; else read -r -p "$p: " a || true; printf '%s' "$a"; fi; }
+yes()  { local a; a="$(ask "$1 (y/n)" "${2:-y}")"; [[ "$a" =~ ^[Yy] ]]; }
+
+# Replace a literal placeholder/value in a file, safe for arbitrary characters.
+subst() {
+  "$PY" - "$1" "$2" "$3" <<'PY'
+import sys
+path, key, val = sys.argv[1:4]
+with open(path) as f: s = f.read()
+with open(path, "w") as f: f.write(s.replace(key, val))
+PY
+}
+
+# Set KEY=value in .env, updating an existing (even commented-out) line or appending.
+set_env() {
+  "$PY" - "$ENV" "$1" "$2" <<'PY'
+import re, sys
+path, key, val = sys.argv[1:4]
+lines = open(path).read().splitlines()
+out, done = [], False
+for ln in lines:
+    if re.match(rf'^#?\s*{re.escape(key)}=', ln):
+        out.append(f'{key}={val}'); done = True
+    else:
+        out.append(ln)
+if not done:
+    out.append(f'{key}={val}')
+open(path, "w").write("\n".join(out) + "\n")
+PY
+}
+
+say "${c_bold}Ogma setup${c_rst}  ${c_dim}($OGMA_DIR)${c_rst}"
+say "This configures your own copy. Nothing is sent anywhere; secrets you enter stay on this box."
+
+# --- Prerequisites -----------------------------------------------------------
+step "Checking prerequisites"
+command -v "$PY" >/dev/null || { err "python3 not found — install it first."; exit 1; }
+ok "python3: $($PY --version 2>&1)"
+command -v curl >/dev/null && ok "curl present" || warn "curl not found — Telegram delivery (tg-send/briefing) needs it."
+CLAUDE_BIN="$(command -v claude || true)"; [ -n "$CLAUDE_BIN" ] || CLAUDE_BIN="$HOME/.local/bin/claude"
+if [ -x "$CLAUDE_BIN" ]; then ok "claude CLI: $CLAUDE_BIN"; else warn "claude CLI not found at $CLAUDE_BIN — set CLAUDE_BIN in .env, or install Claude Code."; fi
+HAVE_SYSTEMD=0; if command -v systemctl >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then HAVE_SYSTEMD=1; ok "systemd --user available"; else warn "systemd --user not available — you'll run the gateway manually."; fi
+
+# --- .env --------------------------------------------------------------------
+step "Configuring .env"
+if [ -f "$ENV" ]; then
+  warn ".env already exists."
+  yes "Update it in place (keeps existing values you don't change)?" "y" || { say "Leaving .env as-is."; }
+else
+  cp "$EXAMPLE" "$ENV"; chmod 600 "$ENV"; ok "Created .env from template (chmod 600)."
+fi
+chmod 600 "$ENV" 2>/dev/null || true
+
+say "${c_dim}Create YOUR OWN bot: message @BotFather in Telegram → /newbot → copy the token.${c_rst}"
+say "${c_dim}(Ogma is self-hosted — this is your private bot, not a shared one.)${c_rst}"
+token="$(ask "Your Telegram bot token (blank to skip for now)")"
+if [ -n "$token" ]; then set_env TELEGRAM_BOT_TOKEN "$token"; ok "Token saved."; else warn "No token yet — add TELEGRAM_BOT_TOKEN to .env before first run."; fi
+
+owner="$(ask "Your name (how Ogma addresses you)" "you")"
+set_env OGMA_OWNER_NAME "$owner"; ok "Owner name set to: $owner"
+loc="$(ask "Weather location for the briefing, e.g. Vienna (blank = auto by IP)")"
+[ -n "$loc" ] && { set_env OGMA_WEATHER_LOC "$loc"; ok "Weather location: $loc"; }
+
+# --- Placeholders ------------------------------------------------------------
+step "Filling persona & hook placeholders"
+subst "$OGMA_DIR/workspace/CLAUDE.md" "{{OWNER_NAME}}" "$owner"
+subst "$OGMA_DIR/workspace/CLAUDE.md" "{{OGMA_DIR}}"  "$OGMA_DIR"
+subst "$OGMA_DIR/workspace/.claude/settings.json" "{{OGMA_DIR}}" "$OGMA_DIR"
+ok "workspace/CLAUDE.md and workspace/.claude/settings.json updated."
+
+# --- Permissions -------------------------------------------------------------
+step "Setting executable permissions"
+chmod +x "$OGMA_DIR"/bin/* "$OGMA_DIR"/hooks/*.py 2>/dev/null || true
+ok "bin/ and hooks/ are executable."
+
+# --- Skills ------------------------------------------------------------------
+step "Installing skills (tickets, session-search, daily-briefing)"
+if yes "Install skills into ~/.claude/skills/?" "y"; then
+  mkdir -p "$HOME/.claude/skills"
+  for s in tickets session-search daily-briefing; do
+    dest="$HOME/.claude/skills/$s"
+    if [ -e "$dest" ]; then warn "$s already present — skipped."; else cp -r "$OGMA_DIR/skills/$s" "$dest"; ok "installed $s"; fi
+  done
+  say "${c_dim}(Tip: symlink instead — ln -s $OGMA_DIR/skills/<name> ~/.claude/skills/<name> — to track repo updates.)${c_rst}"
+else
+  warn "Skipped. The 'tickets' skill is what drives the workflow — install it later from skills/."
+fi
+
+# --- systemd ------------------------------------------------------------------
+if [ "$HAVE_SYSTEMD" = 1 ]; then
+  step "Installing systemd --user services"
+  if yes "Install the systemd units now?" "y"; then
+    UD="$HOME/.config/systemd/user"; mkdir -p "$UD"
+    for f in "$OGMA_DIR"/systemd/*; do
+      base="$(basename "$f")"
+      sed "s|{{OGMA_DIR}}|$OGMA_DIR|g; s|{{HOME}}|$HOME|g" "$f" > "$UD/$base"
+    done
+    systemctl --user daemon-reload
+    ok "Units installed to $UD and daemon reloaded."
+    if yes "Enable linger (keep services running when you're logged out)?" "y"; then
+      loginctl enable-linger "$USER" 2>/dev/null && ok "Linger enabled." || warn "Could not enable linger (may need: sudo loginctl enable-linger $USER)."
+    fi
+    say "${c_dim}Optional routines: systemctl --user enable --now ogma-briefing.timer ogma-dream.timer ogma-health.timer${c_rst}"
+  else
+    warn "Skipped. Templates are in systemd/ — install them manually later (see README)."
+  fi
+fi
+
+# --- First-run: discover chat ID ---------------------------------------------
+step "Authorizing your chat"
+allowed="$(grep -E '^TELEGRAM_ALLOWED_USERS=' "$ENV" | cut -d= -f2-)"
+if [ -n "$token" ] && [ -z "$allowed" ]; then
+  say "To authorize yourself, Ogma needs your Telegram chat ID."
+  if yes "Message your bot now and let me detect your chat ID automatically?" "y"; then
+    say "Open Telegram, send your bot any message, then press Enter here."
+    read -r _ || true
+    ids="$($PY - "$token" <<'PY'
+import json, sys, urllib.request
+tok = sys.argv[1]
+try:
+    with urllib.request.urlopen(f"https://api.telegram.org/bot{tok}/getUpdates", timeout=15) as r:
+        data = json.load(r)
+except Exception as e:
+    print("ERR", e); sys.exit(0)
+seen = []
+for u in data.get("result", []):
+    m = u.get("message") or u.get("edited_message") or {}
+    cid = (m.get("chat") or {}).get("id")
+    if cid is not None and cid not in seen:
+        seen.append(cid)
+print(" ".join(str(i) for i in seen))
+PY
+)"
+    if [ -z "$ids" ] || [[ "$ids" == ERR* ]]; then
+      warn "Couldn't detect a chat ID ($ids). Message the bot, then re-run setup, or add it to TELEGRAM_ALLOWED_USERS manually."
+    else
+      say "Detected chat ID(s): ${c_bold}$ids${c_rst}"
+      pick="$(ask "Comma-separated IDs to allow" "$(echo "$ids" | tr ' ' ',')")"
+      set_env TELEGRAM_ALLOWED_USERS "$pick"; ok "Authorized: $pick"
+    fi
+  else
+    say "${c_dim}Manual path: run 'python3 gateway.py', message the bot, copy the chat ID it prints into TELEGRAM_ALLOWED_USERS, then restart.${c_rst}"
+  fi
+else
+  [ -z "$token" ] && warn "Set the token first, then re-run setup to authorize your chat." || ok "TELEGRAM_ALLOWED_USERS already set: $allowed"
+fi
+
+# --- Done --------------------------------------------------------------------
+step "Done"
+allowed="$(grep -E '^TELEGRAM_ALLOWED_USERS=' "$ENV" | cut -d= -f2-)"
+if [ "$HAVE_SYSTEMD" = 1 ] && [ -n "$token" ] && [ -n "$allowed" ]; then
+  if yes "Start the gateway now (systemctl --user enable --now ogma-gateway)?" "y"; then
+    systemctl --user enable --now ogma-gateway && ok "Gateway started. Logs: journalctl --user -u ogma-gateway -f" || err "Failed to start — check: systemctl --user status ogma-gateway"
+  fi
+else
+  say "Next: once token + allowed users are set, start it:"
+  say "  ${c_dim}systemctl --user enable --now ogma-gateway${c_rst}   (or: python3 $OGMA_DIR/gateway.py)"
+fi
+say "\nRead ${c_bold}docs/workflow.md${c_rst} for how Ogma is meant to be used. Enjoy."

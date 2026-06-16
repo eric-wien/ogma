@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""news-fetch — pull RSS feeds and emit a compact digest of items newer than a
+cutoff time, tagged by source. Deterministic input for the morning briefing
+(Claude then clusters/summarises). Stdlib only.
+
+Usage:
+    news-fetch [CUTOFF_EPOCH]
+
+CUTOFF_EPOCH: only items published at/after this Unix time are emitted.
+Defaults to 24h ago. Output is plain text on stdout, grouped by source.
+
+FEEDS are configurable via the OGMA_RSS_FEEDS environment variable, a
+comma-separated list of `Label|url` pairs, e.g.:
+
+    OGMA_RSS_FEEDS="BBC World|http://feeds.bbci.co.uk/news/world/rss.xml,Guardian World|https://www.theguardian.com/world/rss"
+
+If unset, a small set of generic English world-news feeds is used. Edit these to
+your own sources (and language) — the briefing's tone/language is set in bin/briefing.
+
+Handles both RSS 2.0 (<pubDate>, RFC-822) and RSS 1.0/RDF (<dc:date>, ISO-8601)
+by matching element local-names namespace-agnostically.
+"""
+from __future__ import annotations
+
+import os
+import sys
+import time
+import urllib.request
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from xml.etree import ElementTree as ET
+
+# Generic defaults — override with OGMA_RSS_FEEDS (see module docstring).
+DEFAULT_FEEDS = [
+    ("BBC World",      "http://feeds.bbci.co.uk/news/world/rss.xml"),
+    ("Guardian World", "https://www.theguardian.com/world/rss"),
+    ("NPR News",       "https://feeds.npr.org/1001/rss.xml"),
+]
+
+
+def load_feeds():
+    """(label, url) list from OGMA_RSS_FEEDS, else the generic defaults."""
+    raw = os.environ.get("OGMA_RSS_FEEDS", "").strip()
+    if not raw:
+        return DEFAULT_FEEDS
+    feeds = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry or "|" not in entry:
+            continue
+        label, _, url = entry.partition("|")
+        label, url = label.strip(), url.strip()
+        if label and url:
+            feeds.append((label, url))
+    return feeds or DEFAULT_FEEDS
+
+
+PER_FEED_MAX = 40          # cap items kept per feed
+DESC_MAX = 180             # truncate each item's summary
+UA = ("Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+
+
+def localname(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1].lower()
+
+
+def first_child(item, *names):
+    want = {n.lower() for n in names}
+    for child in item.iter():
+        if localname(child.tag) in want and (child.text or "").strip():
+            return child.text.strip()
+    return ""
+
+
+def parse_date(raw: str):
+    if not raw:
+        return None
+    raw = raw.strip()
+    # RFC-822 (RSS 2.0 pubDate)
+    try:
+        dt = parsedate_to_datetime(raw)
+        if dt is not None:
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError, IndexError):
+        pass
+    # ISO-8601 (dc:date), tolerate trailing Z
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def fetch(url: str) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": UA,
+                                               "Accept": "application/rss+xml, application/xml, text/xml, */*"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return r.read()
+
+
+def items_from(xml: bytes):
+    root = ET.fromstring(xml)
+    out = []
+    for el in root.iter():
+        if localname(el.tag) != "item":
+            continue
+        title = first_child(el, "title")
+        if not title:
+            continue
+        date_raw = first_child(el, "pubdate", "date", "published", "updated")
+        desc = first_child(el, "description", "summary")
+        out.append((parse_date(date_raw), title, desc))
+    return out
+
+
+def main() -> int:
+    cutoff_epoch = float(sys.argv[1]) if len(sys.argv) > 1 else time.time() - 86400
+    cutoff = datetime.fromtimestamp(cutoff_epoch, tz=timezone.utc)
+    local = datetime.now().astimezone().tzinfo
+
+    print(f"# Headlines since {cutoff.astimezone(local):%Y-%m-%d %H:%M %Z} "
+          f"(per source; newest first)\n")
+
+    total = 0
+    for label, url in load_feeds():
+        try:
+            items = items_from(fetch(url))
+        except Exception as e:  # noqa: BLE001
+            print(f"## {label}\n(could not load: {e})\n")
+            continue
+        # keep dated items within window; undated are dropped (can't dedupe by time)
+        fresh = [(d, t, s) for (d, t, s) in items if d is not None and d >= cutoff]
+        fresh.sort(key=lambda x: x[0], reverse=True)
+        fresh = fresh[:PER_FEED_MAX]
+        if not fresh:
+            continue
+        print(f"## {label} ({len(fresh)})")
+        for d, title, desc in fresh:
+            hm = d.astimezone(local).strftime("%a %H:%M")
+            line = f"- [{hm}] {title}"
+            if desc:
+                line += f" — {desc[:DESC_MAX]}"
+            print(line)
+            total += 1
+        print()
+
+    if total == 0:
+        print("(no new items in window)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

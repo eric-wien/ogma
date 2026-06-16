@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# ogmactl — tightly-scoped self-management for the Ogma gateway.
+#
+# This is the ONLY shell command the Telegram bot is permitted to run. It accepts
+# a fixed whitelist of subcommands and refuses everything else, so granting the bot
+# access to this script does NOT grant it arbitrary shell on the box.
+set -uo pipefail
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SVC="ogma-gateway"
+LOG="$BASE/gateway.log"
+ENV="$BASE/.env"
+TICKETS="$BASE/tickets"
+
+usage() {
+  echo "ogmactl: allowed commands — status | logs [N] | restart | pihole | health | ticket <text> | tickets"
+}
+
+# Read a config value (OGMA_<name>) from .env.
+cfg() {
+  grep -E "^OGMA_${1}=" "$ENV" 2>/dev/null | cut -d= -f2-
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  status)
+    echo "service : $(systemctl --user is-active "$SVC" 2>/dev/null || echo unknown)"
+    up="$(systemctl --user show "$SVC" -p ActiveEnterTimestamp --value 2>/dev/null)"
+    echo "since   : ${up:-?}"
+    echo "model   : $(cfg MODEL || echo default)"
+    ;;
+  logs)
+    n="${2:-30}"
+    if ! [[ "$n" =~ ^[0-9]+$ ]] || (( n > 200 )); then
+      echo "usage: ogmactl logs [N]   (N = 1..200 lines)"; exit 2
+    fi
+    tail -n "$n" "$LOG" 2>/dev/null || echo "(no log yet)"
+    ;;
+  restart)
+    # Schedule a detached restart in its own transient scope so it survives this
+    # process (and the whole service cgroup) being torn down by the restart.
+    if systemd-run --user --on-active=8 \
+         systemctl --user restart "$SVC" >/dev/null 2>&1; then
+      echo "✅ Restart scheduled in ~8s. I'll be back momentarily."
+    else
+      echo "⚠️ Could not schedule restart (systemd-run --user failed)."; exit 1
+    fi
+    ;;
+  pihole)
+    if command -v pihole >/dev/null 2>&1; then
+      pihole status 2>&1 | grep -v 'utils.sh' | head -20
+    else
+      echo "pihole CLI not found on this host"
+    fi
+    ;;
+  health)
+    echo "uptime  : $(uptime -p 2>/dev/null || cut -d. -f1 /proc/uptime)"
+    echo "load    : $(cut -d' ' -f1-3 /proc/loadavg)"
+    temp="$(vcgencmd measure_temp 2>/dev/null | sed 's/temp=//')"
+    echo "temp    : ${temp:-n/a}"
+    thr="$(vcgencmd get_throttled 2>/dev/null | sed 's/throttled=//')"
+    if [ "$thr" = "0x0" ]; then echo "throttle: $thr (healthy)"; else echo "throttle: ${thr:-n/a}"; fi
+    echo "memory  : $(free -h | awk 'NR==2{print $3" used / "$2}')"
+    echo "disk /  : $(df -h / | awk 'NR==2{print $3" used / "$2" ("$5")"}')"
+    ;;
+  ticket)
+    shift
+    body="$*"
+    [ -n "$body" ] || { echo "usage: ogmactl ticket <description>"; exit 2; }
+    mkdir -p "$TICKETS"
+    id="$(date +%Y%m%d-%H%M%S)"
+    f="$TICKETS/${id}.md"
+    {
+      echo "---"
+      echo "id: $id"
+      echo "created: $(date '+%F %T %Z')"
+      echo "status: open"
+      echo "source: telegram"
+      echo "---"
+      echo
+      echo "$body"
+    } > "$f"
+    echo "🎫 Ticket $id filed. Pick it up in an interactive session."
+    ;;
+  tickets)
+    shopt -s nullglob
+    files=("$TICKETS"/*.md)
+    if (( ${#files[@]} == 0 )); then echo "No open tickets."; exit 0; fi
+    echo "Open tickets (${#files[@]}):"
+    for f in "${files[@]}"; do
+      id="$(basename "$f" .md)"
+      sum="$(awk '/^---$/{d++; next} d>=2 && NF{print; exit}' "$f")"
+      echo "• $id — ${sum:0:80}"
+    done
+    ;;
+  ""|-h|--help|help)
+    usage
+    ;;
+  *)
+    echo "ogmactl: refused unknown command '$cmd'"; usage; exit 2
+    ;;
+esac

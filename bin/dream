@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# dream — nightly, silent memory consolidation for Ogma (Nous-Hermes style).
+#
+# Phase 1: distill the last ~24h into a rolling, hard-capped yesterday.md (short-term memory).
+# Phase 2: consolidate long-term memory — promote durable facts, merge dupes, prune stale,
+#          keep the index lean.
+# Produces NO Telegram output. Runs unattended via the ogma-dream.timer.
+set -uo pipefail
+
+export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+export OGMA_PERSIST_PASS=1   # belt-and-suspenders: never trigger the gateway persist hook
+
+BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV="$BASE/.env"
+# Claude Code's per-project memory lives under ~/.claude/projects/<cwd-with-slashes-as-dashes>/.
+# We run AS $HOME, so derive that project dir from $HOME (e.g. /home/bob -> -home-bob).
+PROJ="$(printf '%s' "$HOME" | sed 's#/#-#g')"
+MEM="$HOME/.claude/projects/$PROJ/memory"
+YESTERDAY="$MEM/yesterday.md"
+YDAY_MAX=3000
+# Run AS the home project so the memory dir is this project's own auto-memory (writing into
+# another project's .claude data is blocked as "sensitive"). No Stop hook lives at this cwd
+# (the gateway hook is under workspace/), and OGMA_PERSIST_PASS guards anyway.
+cd "$HOME" || exit 1
+
+# Read a config value (OGMA_<name>) from .env.
+cfg() {
+  grep -E "^OGMA_${1}=" "$ENV" 2>/dev/null | cut -d= -f2-
+}
+model="$(cfg DREAM_MODEL)"; model="${model:-sonnet}"
+
+read -r -d '' PROMPT <<EOF
+You are running an unattended nightly MEMORY CONSOLIDATION ("dream") for your user. No one is awake
+— produce no conversational output, just do the file work, then stop. Work in two phases.
+
+ACCURACY (critical — you are writing long-lived memory with no human to catch mistakes):
+- Record ONLY facts clearly supported by the transcripts or existing memory. Never invent or infer
+  beyond the evidence. If you're not sure something is true, omit it — do not assert it.
+- Distinguish what was DISCUSSED or PROPOSED from what was actually DONE. A thing someone asked
+  about is NOT a thing that exists. Only record creations/changes that the transcript shows actually
+  happening (a successful tool call, a confirmation).
+- Account for things UNDONE within the window: if a file was created then deleted, or a value set
+  then reverted, the end state is what matters — don't record the transient state as current.
+- Do not claim a file, config, service, or ticket exists unless that's clearly confirmed. When a
+  later turn contradicts an earlier one, trust the later turn.
+- Prefer hedged or omitted over confidently wrong. Quality of truth over completeness.
+
+PHASE 1 — Yesterday's essence (short-term memory):
+- Review the conversation transcripts from roughly the last 24 hours: JSONL files under
+  $HOME/.claude/projects/*/ that were modified recently (use Glob by mtime, then Read/Grep). The
+  human/assistant text lives in each record's content/message fields; 'timestamp' gives the time.
+  Sample intelligently — you don't need to read every line.
+- Distill the ESSENCE of the last ~24h: what the user did, decided, asked about, or felt; open
+  threads; anything that gives useful continuity for today.
+- OVERWRITE $YESTERDAY with it. HARD LIMIT: 3000 characters — be ruthless, keep only what helps
+  tomorrow. Use standard memory frontmatter (name: yesterday / description: rolling essence of the
+  previous ~24h / type: project) followed by a tight body.
+
+PHASE 2 — Consolidate long-term memory ("the rest"):
+- Read MEMORY.md and every memory file in $MEM.
+- Promote genuinely DURABLE facts surfaced in the last 24h into proper long-term memories with the
+  right type (user / feedback / project / reference). yesterday.md itself stays rolling/short-term.
+- Merge duplicates, fix or retire stale or contradicted info, tighten wording; keep each memory to
+  one focused fact with its [[links]].
+- Keep MEMORY.md a LEAN, accurate index — aim under 2500 characters. Every memory file gets exactly
+  one pointer; remove dead or duplicate pointers; include a pointer to yesterday.md.
+- To retire an obsolete memory, remove its line from MEMORY.md (you may blank the file too). Do NOT
+  use any shell/delete tools.
+- Be conservative: when unsure whether something is durable, KEEP it. Quality over deletion.
+EOF
+
+ts="$(date '+%F %T')"
+echo "$ts dream: starting (model=$model)"
+
+# Safety net: snapshot memory before any rewrite; keep the last 7 nights.
+BACKUPS="$BASE/memory-backups"
+mkdir -p "$BACKUPS"
+snap="$BACKUPS/$(date +%Y%m%d-%H%M%S)"
+if cp -r "$MEM" "$snap" 2>/dev/null; then
+  echo "$(date '+%F %T') dream: memory snapshot -> $snap"
+  ls -1dt "$BACKUPS"/*/ 2>/dev/null | tail -n +8 | xargs -r rm -rf
+fi
+
+claude -p "$PROMPT" \
+  --model "$model" \
+  --allowedTools "Read Glob Grep Edit Write" \
+  --permission-mode acceptEdits \
+  --add-dir "$HOME/.claude/projects" \
+  --output-format json >/tmp/ogma-dream-out.json 2>/dev/null
+
+# Guarantee the hard cap on yesterday.md regardless of what the model wrote.
+if [ -f "$YESTERDAY" ] && [ "$(wc -c < "$YESTERDAY")" -gt "$YDAY_MAX" ]; then
+  head -c "$YDAY_MAX" "$YESTERDAY" > "$YESTERDAY.tmp" && mv "$YESTERDAY.tmp" "$YESTERDAY"
+  echo "$(date '+%F %T') dream: truncated yesterday.md to ${YDAY_MAX}c"
+fi
+
+result="$(python3 -c 'import sys,json; print(json.load(open("/tmp/ogma-dream-out.json")).get("subtype","?"))' 2>/dev/null)"
+ysize="$( [ -f "$YESTERDAY" ] && wc -c < "$YESTERDAY" || echo 0 )"
+midx="$( [ -f "$MEM/MEMORY.md" ] && wc -c < "$MEM/MEMORY.md" || echo 0 )"
+echo "$(date '+%F %T') dream: done (result=$result, yesterday=${ysize}c, MEMORY.md=${midx}c)"

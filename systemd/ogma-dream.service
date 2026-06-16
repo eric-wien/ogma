@@ -1,0 +1,11 @@
+[Unit]
+Description=Ogma nightly memory consolidation (dream)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={{OGMA_DIR}}/bin/dream
+StandardOutput=append:{{OGMA_DIR}}/dream.log
+StandardError=append:{{OGMA_DIR}}/dream.log
+Environment=PATH={{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin

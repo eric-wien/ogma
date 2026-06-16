@@ -1,0 +1,8 @@
+[Unit]
+Description=Ogma proactive health check (temp/load/disk/mem -> Telegram alert)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={{OGMA_DIR}}/bin/health-check

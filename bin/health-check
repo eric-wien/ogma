@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# health-check — proactive host health monitor for Ogma.
+#
+# Reads CPU temp, 1-min load, disk usage on /, and available RAM directly from
+# the kernel. If any threshold is crossed it sends ONE Telegram alert via
+# tg-send, then suppresses repeats for COOLDOWN seconds via a lockfile. A clean
+# (healthy) check clears the lock, so a fresh breach alerts immediately.
+#
+# Runs every ~5 min from ogma-health.timer (systemd --user). No Claude in the
+# loop — pure shell, cheap, safe to run often. Thresholds overridable via env.
+# (CPU-temp reading is Raspberry-Pi-style; it's skipped cleanly on hosts without
+# /sys/class/thermal/thermal_zone0/temp.)
+set -uo pipefail
+
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCK="/tmp/ogma-health-alerted"
+COOLDOWN="${HEALTH_COOLDOWN:-1800}"          # 30 min between repeat alerts
+
+TEMP_MAX="${HEALTH_TEMP_MAX:-75}"            # °C
+LOAD_MAX="${HEALTH_LOAD_MAX:-3.0}"           # 1-min load average
+DISK_MAX="${HEALTH_DISK_MAX:-85}"            # % used on /
+MEM_MIN_MB="${HEALTH_MEM_MIN_MB:-120}"       # MiB MemAvailable floor
+
+alerts=()
+
+# --- CPU temperature (skipped if the sysfs node isn't present) ---
+if [ -r /sys/class/thermal/thermal_zone0/temp ]; then
+  traw="$(cat /sys/class/thermal/thermal_zone0/temp)"
+  temp=$(( traw / 1000 ))
+  [ "$temp" -gt "$TEMP_MAX" ] && alerts+=("🌡️ CPU ${temp}°C (> ${TEMP_MAX}°C)")
+fi
+
+# --- Load average (1 min); float compare via awk ---
+load1="$(cut -d' ' -f1 /proc/loadavg)"
+if awk "BEGIN{exit !(${load1} > ${LOAD_MAX})}"; then
+  alerts+=("📈 load ${load1} (> ${LOAD_MAX})")
+fi
+
+# --- Disk usage on / ---
+diskpct="$(df --output=pcent / | tail -1 | tr -dc '0-9')"
+[ "${diskpct:-0}" -gt "$DISK_MAX" ] && alerts+=("💾 disk ${diskpct}% used on / (> ${DISK_MAX}%)")
+
+# --- Available memory ---
+memavail_kb="$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)"
+memavail_mb=$(( memavail_kb / 1024 ))
+[ "$memavail_mb" -lt "$MEM_MIN_MB" ] && alerts+=("🧠 ${memavail_mb}MiB RAM free (< ${MEM_MIN_MB}MiB)")
+
+# --- Healthy: clear the lock so the next breach alerts immediately ---
+if [ "${#alerts[@]}" -eq 0 ]; then
+  rm -f "$LOCK"
+  exit 0
+fi
+
+# --- Cooldown: stay quiet if we alerted within COOLDOWN ---
+if [ -f "$LOCK" ]; then
+  age=$(( $(date +%s) - $(stat -c %Y "$LOCK") ))
+  [ "$age" -lt "$COOLDOWN" ] && exit 0
+fi
+
+host="$(hostname)"
+msg="$(printf '⚠️ Ogma health alert on %s:\n%s' "$host" "$(printf '%s\n' "${alerts[@]}")")"
+
+if "$BIN/tg-send" "$msg"; then
+  touch "$LOCK"
+else
+  echo "health-check: tg-send failed" >&2
+fi
