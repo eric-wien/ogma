@@ -148,6 +148,12 @@ subcommands — granting it does *not* grant arbitrary shell): `status`, `logs [
 `health`, `ticket <text>`, `tickets`. To let the bot use it, add the scoped rule to
 `OGMA_ALLOWED_TOOLS` (see `.env.example`).
 
+**Host-specific commands.** To add commands for your own box without forking the tool, drop an
+executable `bin/ogmactl.local` (gitignored) — `ogmactl` delegates any subcommand it doesn't
+recognise to it. Keep the same discipline as `ogmactl`: whitelist your commands and refuse the
+rest (the bot can reach them through `ogmactl`, so keep them read-only and safe). On a stock
+install there's no such file and unknown commands are refused as before.
+
 ## Scheduled routines (optional)
 - **`bin/briefing`** — deterministic news (RSS via `bin/news-fetch`) + weather, summarised by
   Claude, delivered via `bin/tg-send`. Configure feeds/location/owner in `.env`. Dry-run:

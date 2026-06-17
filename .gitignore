@@ -14,3 +14,6 @@ tickets/done/*.md
 # Python
 __pycache__/
 *.pyc
+
+# host-specific ogmactl extension (operator-provided, never published)
+bin/ogmactl.local

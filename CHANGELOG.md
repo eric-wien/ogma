@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.0.2] — 2026-06-17
+
+### Added
+- **Host-local `ogmactl` extensions.** `ogmactl` now delegates any subcommand it doesn't recognise
+  to an optional, executable `bin/ogmactl.local` (gitignored), letting operators add host-specific
+  commands without forking the host-agnostic tool. On a stock install there's no such file and
+  unknown commands are refused exactly as before, so the bot's whitelist boundary is unchanged.
+  Documented in the README; `bin/ogmactl.local` is gitignored.
+
 ## [1.0.1] — 2026-06-17
 
 ### Fixed
@@ -132,6 +141,7 @@ First public release. A minimal, self-hosted bridge from Telegram to Claude Code
 - Single shared brain — multiple allow-listed chats share one persona/workspace/memory. Per-user
   isolation is planned (see issues).
 
+[1.0.2]: https://github.com/eric-wien/ogma/releases/tag/v1.0.2
 [1.0.1]: https://github.com/eric-wien/ogma/releases/tag/v1.0.1
 [1.0.0]: https://github.com/eric-wien/ogma/releases/tag/v1.0.0
 [0.5.0]: https://github.com/eric-wien/ogma/releases/tag/v0.5.0

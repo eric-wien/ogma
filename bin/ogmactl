@@ -12,9 +12,13 @@ SVC="ogma-gateway"
 LOG="$BASE/gateway.log"
 ENV="$BASE/.env"
 TICKETS="$BASE/tickets"
+# Optional, operator-provided, gitignored extension for host-specific commands
+# (e.g. a Pi-hole diagnostic). Keeps the public tool host-agnostic. See the *) case.
+LOCAL="$BASE/bin/ogmactl.local"
 
 usage() {
   echo "ogmactl: allowed commands — status | logs [N] | restart | health | ticket <text> | tickets"
+  [ -x "$LOCAL" ] && "$LOCAL" help 2>/dev/null
 }
 
 # Read a config value (OGMA_<name>) from .env.
@@ -90,6 +94,13 @@ case "$cmd" in
     usage
     ;;
   *)
+    # Delegate to the optional host-local extension if the operator installed one.
+    # It MUST whitelist its own subcommands and refuse the rest (same discipline as
+    # this script), since the bot can reach it through ogmactl. On a stock install
+    # there is no such file and unknown commands are refused, as before.
+    if [ -x "$LOCAL" ]; then
+      exec "$LOCAL" "$@"
+    fi
     echo "ogmactl: refused unknown command '$cmd'"; usage; exit 2
     ;;
 esac
