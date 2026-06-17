@@ -27,7 +27,11 @@ cd "$HOME" || exit 1
 cfg() {
   grep -E "^OGMA_${1}=" "$ENV" 2>/dev/null | cut -d= -f2-
 }
-model="$(cfg DREAM_MODEL)"; model="${model:-sonnet}"
+# Default to the explicit standard-context model id, NOT the bare 'sonnet' alias:
+# in headless runs the alias can resolve to the credit-gated 1M-context variant
+# (a large nightly transcript sweep tripped "Usage credits required for 1M context").
+# Pinning the full id forces the standard 200k window. Keep in sync with bin/setup.
+model="$(cfg DREAM_MODEL)"; model="${model:-claude-sonnet-4-6}"
 
 read -r -d '' PROMPT <<EOF
 You are running an unattended nightly MEMORY CONSOLIDATION ("dream") for your user. No one is awake

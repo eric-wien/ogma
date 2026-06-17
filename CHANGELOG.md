@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] — 2026-06-17
+
+### Fixed
+- **Nightly dream / briefing no longer trip the 1M-context credit gate.** The headless jobs
+  (`bin/dream`, `bin/briefing`) defaulted to the bare `sonnet` alias, which in headless runs can
+  resolve to the credit-gated 1M-context model variant and fail with *"Usage credits required for
+  1M context"* — silently skipping a nightly memory consolidation. They now default to the explicit
+  standard-context id `claude-sonnet-4-6` (matching what `bin/setup` already writes for the gateway),
+  which forces the standard 200k window. Override via `OGMA_MODEL` / `OGMA_DREAM_MODEL` as before.
+
 ## [1.0.0] — 2026-06-16
 
 First stable release. The public surface — the `OGMA_*` settings, the `/new` · `/model` · `/effort` ·
@@ -122,6 +132,7 @@ First public release. A minimal, self-hosted bridge from Telegram to Claude Code
 - Single shared brain — multiple allow-listed chats share one persona/workspace/memory. Per-user
   isolation is planned (see issues).
 
+[1.0.1]: https://github.com/eric-wien/ogma/releases/tag/v1.0.1
 [1.0.0]: https://github.com/eric-wien/ogma/releases/tag/v1.0.0
 [0.5.0]: https://github.com/eric-wien/ogma/releases/tag/v0.5.0
 [0.4.0]: https://github.com/eric-wien/ogma/releases/tag/v0.4.0

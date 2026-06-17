@@ -7,7 +7,7 @@
 #   OGMA_OWNER_NAME    who the briefing is for         (default: "you")
 #   OGMA_WEATHER_LOC   wttr.in location, e.g. "Vienna" (default: empty = geolocate by IP)
 #   OGMA_RSS_FEEDS     feeds for news-fetch            (see bin/news-fetch)
-#   OGMA_MODEL         Claude model                    (default: sonnet)
+#   OGMA_MODEL         Claude model                    (default: claude-sonnet-4-6)
 # Customise the prompt below for your own tone, topics, and language.
 set -uo pipefail
 
@@ -26,7 +26,10 @@ cfg() {
   grep -E "^OGMA_${1}=" "$ENV" 2>/dev/null | cut -d= -f2-
 }
 
-model="$(cfg MODEL)"; model="${model:-sonnet}"
+# Explicit standard-context id, not the bare 'sonnet' alias — the alias can
+# resolve to the credit-gated 1M-context variant in headless runs. Keep in sync
+# with bin/setup and bin/dream.
+model="$(cfg MODEL)"; model="${model:-claude-sonnet-4-6}"
 owner="$(cfg OWNER_NAME)"; owner="${owner:-you}"
 loc="$(cfg WEATHER_LOC)"   # empty => wttr.in geolocates by IP
 now="$(date +%s)"

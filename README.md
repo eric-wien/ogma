@@ -137,7 +137,7 @@ See [`skills/README.md`](skills/README.md) for details and how to write your own
 | `OGMA_MODEL` | gateway model (live-changeable via `/model`) | Claude Code default |
 | `OGMA_FALLBACK_MODEL` | model used if the primary is unavailable (live via `/fallback`) | none |
 | `OGMA_EFFORT` | reasoning effort `low`..`max` (live-changeable via `/effort`) | CLI default |
-| `OGMA_DREAM_MODEL` | nightly memory job model | `sonnet` |
+| `OGMA_DREAM_MODEL` | nightly memory job model (standard-context id avoids the 1M credit gate) | `claude-sonnet-4-6` |
 | `OGMA_OWNER_NAME` | who the briefing addresses | `you` |
 | `OGMA_WEATHER_LOC` | wttr.in location for the briefing | geolocate by IP |
 | `OGMA_RSS_FEEDS` | `Label\|url` pairs for the briefing | generic world-news set |
