@@ -145,8 +145,11 @@ See [`skills/README.md`](skills/README.md) for details and how to write your own
 ## Self-management (`ogmactl`)
 `bin/ogmactl` is the **only** shell command the bot is permitted to run (a fixed whitelist of
 subcommands — granting it does *not* grant arbitrary shell): `status`, `logs [N]`, `restart`,
-`health`, `ticket <text>`, `tickets`. To let the bot use it, add the scoped rule to
-`OGMA_ALLOWED_TOOLS` (see `.env.example`).
+`health`, `ticket <text>`, `tickets`. `bin/setup` pre-approves it (and read access to your memory
+directory) in `workspace/.claude/settings.json`, so the bot can self-manage and recall memory over
+Telegram without hitting permission prompts — the headless gateway can't show an approval UI. This
+grant is read-only by design: no `Write`/`Edit`/arbitrary-`Bash`. (`OGMA_ALLOWED_TOOLS` in `.env`
+remains available if you want to widen or narrow the tool set further.)
 
 **Host-specific commands.** To add commands for your own box without forking the tool, drop an
 executable `bin/ogmactl.local` (gitignored) — `ogmactl` delegates any subcommand it doesn't

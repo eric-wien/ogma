@@ -1,4 +1,12 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash({{OGMA_DIR}}/bin/ogmactl:*)"
+    ],
+    "additionalDirectories": [
+      "{{MEMORY_DIR}}"
+    ]
+  },
   "hooks": {
     "Stop": [
       {

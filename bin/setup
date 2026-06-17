@@ -172,6 +172,10 @@ step "Filling persona & hook placeholders"
 subst "$OGMA_DIR/workspace/CLAUDE.md" "{{OWNER_NAME}}" "$owner"
 subst "$OGMA_DIR/workspace/CLAUDE.md" "{{OGMA_DIR}}"  "$OGMA_DIR"
 subst "$OGMA_DIR/workspace/.claude/settings.json" "{{OGMA_DIR}}" "$OGMA_DIR"
+# Canonical auto-memory dir (same derivation the dream/briefing use: $HOME with / -> -),
+# pre-approved for the gateway so the bot can read its memory without a permission prompt.
+mem_dir="$HOME/.claude/projects/$(printf '%s' "$HOME" | sed 's#/#-#g')/memory"
+subst "$OGMA_DIR/workspace/.claude/settings.json" "{{MEMORY_DIR}}" "$mem_dir"
 ok "workspace/CLAUDE.md and workspace/.claude/settings.json updated."
 
 # --- Permissions -------------------------------------------------------------

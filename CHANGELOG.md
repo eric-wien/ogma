@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.0.3] — 2026-06-17
+
+### Fixed
+- **Telegram bot no longer hits permission walls on `ogmactl` and memory reads.** The gateway runs
+  `claude -p` in default permission mode, where headless tool calls can't be approved interactively —
+  so `ogmactl` (a Bash call) and reads of the memory directory (outside the workspace) were silently
+  denied, with no UI to approve them. `workspace/.claude/settings.json` now ships a `permissions`
+  block that pre-approves `Bash({{OGMA_DIR}}/bin/ogmactl:*)` and adds the canonical memory directory
+  to `additionalDirectories`; `bin/setup` fills the new `{{MEMORY_DIR}}` placeholder (same `$HOME`
+  derivation the dream/briefing use). Read-only by design — no `Write`/`Edit`/arbitrary-`Bash` is
+  granted, so the bot's whitelist boundary is unchanged.
+
 ## [1.0.2] — 2026-06-17
 
 ### Added
@@ -141,6 +153,7 @@ First public release. A minimal, self-hosted bridge from Telegram to Claude Code
 - Single shared brain — multiple allow-listed chats share one persona/workspace/memory. Per-user
   isolation is planned (see issues).
 
+[1.0.3]: https://github.com/eric-wien/ogma/releases/tag/v1.0.3
 [1.0.2]: https://github.com/eric-wien/ogma/releases/tag/v1.0.2
 [1.0.1]: https://github.com/eric-wien/ogma/releases/tag/v1.0.1
 [1.0.0]: https://github.com/eric-wien/ogma/releases/tag/v1.0.0
