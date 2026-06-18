@@ -209,14 +209,132 @@ def ask_claude(prompt: str, session_id: str | None) -> tuple[str, str | None]:
 # ---------------------------------------------------------------------------
 # Message handling
 # ---------------------------------------------------------------------------
-HELP_TEXT = (
-    "Ogma here. Just talk to me.\n"
-    "/new — start a fresh session\n"
-    "/model [name] — show or change the model (e.g. sonnet, haiku, opus, a full id, or 'default')\n"
-    "/effort [level] — show or change reasoning effort (low | medium | high | xhigh | max | default)\n"
-    "/fallback [name] — model to use if the main one is unavailable ('none' to clear)\n"
-    "/help — this message"
+# ---------------------------------------------------------------------------
+# Slash commands — generic CORE (this file, public) merged at runtime with a
+# host-LOCAL extension (config/commands.local.json, gitignored). Same core+local
+# split as ogmactl/ogmactl.local and .env/.env.example: ship/update the source
+# without touching a user's own commands, and keep host specifics out of git.
+# ---------------------------------------------------------------------------
+OGMACTL = str(BASE / "bin" / "ogmactl")
+LOCAL_COMMANDS_FILE = BASE / "config" / "commands.local.json"
+_TG_CMD_RE = re.compile(r"^[a-z0-9_]{1,32}$")     # Telegram command-name rule
+_SUBCMD_RE = re.compile(r"^[a-z0-9-]{1,40}$")     # an ogmactl subcommand token
+
+# CORE: only commands that exist in the public ogmactl. Underscore names map to
+# ogmactl's hyphenated subcommands. Args are passed positionally (never via a
+# shell) and ogmactl refuses anything off its own whitelist — no widening.
+CORE_OGMACTL_CMDS: dict[str, list[str]] = {
+    "/status": ["status"], "/health": ["health"], "/logs": ["logs"],
+    "/restart": ["restart"], "/remember": ["remember"],
+    "/ticket": ["ticket"], "/tickets": ["tickets"],
+}
+CORE_MENU_COMMANDS: list[tuple[str, str]] = [
+    ("new", "Start a fresh session"),
+    ("help", "Show commands"),
+    ("model", "Show or set the model"),
+    ("effort", "Show or set reasoning effort"),
+    ("status", "Ogma service status"),
+    ("health", "Host health snapshot"),
+    ("logs", "Recent gateway logs"),
+    ("briefing", "Generate my briefing now"),
+    ("search", "Search past conversations"),
+    ("tickets", "List open tickets"),
+    ("remember", "Save a memory"),
+]
+CORE_HELP = (
+    "Ogma here — just talk to me, or use a command:\n"
+    "\n"
+    "Session:\n"
+    "/new — fresh session\n"
+    "/model [name]   /effort [level]   /fallback [name]\n"
+    "\n"
+    "Ogma & host:\n"
+    "/status   /health   /logs [src] [N]   /restart\n"
+    "/remember <text>   /ticket <text>   /tickets\n"
+    "\n"
+    "Assistant:\n"
+    "/briefing — make my briefing now\n"
+    "/search <query> — search past chats"
 )
+
+
+def load_local_commands() -> list[dict]:
+    """Load + validate the host-local slash commands (config/commands.local.json).
+
+    Schema: {"commands": [{"cmd","run","desc","menu"?,"args"?}, ...]}. A malformed
+    file never crashes the gateway — it's logged and the core commands still work.
+    """
+    if not LOCAL_COMMANDS_FILE.exists():
+        return []
+    try:
+        doc = json.loads(LOCAL_COMMANDS_FILE.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        log("commands.local.json ignored (parse error):", e)
+        return []
+    out = []
+    for c in (doc.get("commands") or []):
+        cmd, run = str(c.get("cmd", "")), str(c.get("run", ""))
+        if not (_TG_CMD_RE.match(cmd) and _SUBCMD_RE.match(run)):
+            log(f"commands.local.json: skipping invalid entry {c!r}")
+            continue
+        out.append({"cmd": cmd, "run": run,
+                    "desc": str(c.get("desc", run))[:256],
+                    "menu": bool(c.get("menu", False)),
+                    "args": str(c.get("args", ""))})
+    return out
+
+
+# Merge core + local at import. handle()/register_menu() use the merged globals.
+LOCAL_COMMANDS = load_local_commands()
+OGMACTL_CMDS: dict[str, list[str]] = dict(CORE_OGMACTL_CMDS)
+OGMACTL_CMDS.update({f"/{c['cmd']}": [c["run"]] for c in LOCAL_COMMANDS})
+MENU_COMMANDS: list[tuple[str, str]] = list(CORE_MENU_COMMANDS)
+MENU_COMMANDS += [(c["cmd"], c["desc"]) for c in LOCAL_COMMANDS if c["menu"]]
+
+
+def build_help() -> str:
+    """Core help, plus a 'This host:' section generated from the local commands."""
+    if not LOCAL_COMMANDS:
+        return CORE_HELP
+    lines = "\n".join(
+        f"/{c['cmd']}{(' ' + c['args']) if c['args'] else ''} — {c['desc']}"
+        for c in LOCAL_COMMANDS
+    )
+    return f"{CORE_HELP}\n\nThis host:\n{lines}"
+
+
+def run_ogmactl(chat_id: str, argv: list[str]) -> None:
+    """Invoke ogmactl with a whitelisted subcommand + positional args; relay output."""
+    typing(chat_id)
+    try:
+        proc = subprocess.run([OGMACTL, *argv], cwd=str(BASE),
+                              capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        send(chat_id, "⏱️ Command timed out.")
+        return
+    send(chat_id, (proc.stdout or proc.stderr or "").strip() or "(no output)")
+
+
+def launch_detached(script: str) -> bool:
+    """Fire-and-forget a bin/ script that delivers its own output (briefing/dream)."""
+    path = BASE / "bin" / script
+    if not path.exists():
+        return False
+    subprocess.Popen([str(path)], cwd=str(BASE),
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+    return True
+
+
+def register_menu() -> None:
+    """Register the slash-command menu with Telegram (server-side; idempotent)."""
+    cmds = [{"command": c, "description": d} for c, d in MENU_COMMANDS]
+    try:
+        r = tg("setMyCommands", {"commands": json.dumps(cmds)}, timeout=15)
+        log("menu registered" if r.get("ok")
+            else f"menu register failed: {r.get('description')}")
+    except Exception as e:  # noqa: BLE001
+        log("setMyCommands error:", e)
 
 
 def handle_model(chat_id: str, arg: str) -> None:
@@ -285,10 +403,12 @@ def handle(chat_id: str, text: str, sessions: dict[str, str]) -> None:
     stripped = text.strip()
     parts = stripped.split(maxsplit=1)
     cmd = parts[0].lower() if parts else ""
+    if "@" in cmd:                      # strip /command@botname (groups)
+        cmd = cmd.split("@", 1)[0]
     arg = parts[1].strip() if len(parts) > 1 else ""
 
     if cmd in ("/start", "/help"):
-        send(chat_id, HELP_TEXT)
+        send(chat_id, build_help())
         return
     if cmd == "/new":
         with _sessions_lock:
@@ -305,6 +425,33 @@ def handle(chat_id: str, text: str, sessions: dict[str, str]) -> None:
     if cmd == "/fallback":
         handle_fallback(chat_id, arg)
         return
+
+    # Deterministic commands -> ogmactl (no LLM call; instant and free).
+    if cmd in OGMACTL_CMDS:
+        if cmd == "/restart":
+            send(chat_id, "♻️ Restarting the gateway…")
+        run_ogmactl(chat_id, OGMACTL_CMDS[cmd] + arg.split())
+        return
+
+    # Script-backed commands that deliver their own output, run detached.
+    if cmd == "/briefing":
+        ok = launch_detached("briefing")
+        send(chat_id, "🗞️ Putting your briefing together — it'll arrive shortly."
+                      if ok else "⚠️ briefing script not found.")
+        return
+    if cmd == "/dream":
+        ok = launch_detached("dream")
+        send(chat_id, "🌙 Consolidating memory in the background (no output expected)."
+                      if ok else "⚠️ dream script not found.")
+        return
+
+    # /search needs the LLM (session-search skill): rewrite the prompt, fall through.
+    if cmd == "/search":
+        if not arg:
+            send(chat_id, "Usage: /search <what to look for>")
+            return
+        text = ("Use the session-search skill to search our past conversations, "
+                f"then tell me what you find about: {arg}")
 
     # Show "typing…" immediately on receipt, synchronously, so it is guaranteed
     # to reach Telegram before the (blocking) Claude call starts — then the
@@ -365,6 +512,7 @@ def main() -> None:
     ok_token, info = validate_token()
     if ok_token:
         log(f"token OK — bot @{info}")
+        register_menu()
     else:
         log(f"⚠️ TOKEN CHECK FAILED ({info}). Fix TELEGRAM_BOT_TOKEN in .env and restart.")
     sessions = load_sessions()

@@ -1,0 +1,20 @@
+{
+  "_comment": [
+    "TEMPLATE — copy to config/commands.local.json to add your own Telegram slash commands.",
+    "The gateway merges these with its built-in core commands at runtime, so your additions",
+    "survive `git pull` and never need editing the tracked source. The real file is gitignored.",
+    "",
+    "Each command maps a Telegram /cmd to an ogmactl subcommand. ogmactl (and your gitignored",
+    "ogmactl.local) still gate execution, so listing a command here can't run anything ogmactl",
+    "would otherwise refuse. Fields:",
+    "  cmd  - the Telegram command name, without the slash. Telegram allows only [a-z0-9_], max 32.",
+    "  run  - the ogmactl subcommand to execute (hyphens allowed, e.g. 'pihole-stats').",
+    "  desc - short text shown in the / menu and /help.",
+    "  menu - true to surface it in Telegram's / menu (false = works when typed, but hidden).",
+    "  args - optional usage hint shown in /help, e.g. '<dur>' or '<mac> <person>'."
+  ],
+  "commands": [
+    {"cmd": "myhost",      "run": "myhost-status", "desc": "Example: a host-local status command", "menu": true},
+    {"cmd": "myhost_thing", "run": "myhost-thing", "desc": "Example with an argument", "menu": false, "args": "<value>"}
+  ]
+}

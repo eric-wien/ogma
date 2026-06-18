@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] — 2026-06-18
+
+### Added
+- **Native Telegram slash commands, with a core + host-local split.** The gateway now answers a set
+  of `/` commands directly — `/status`, `/health`, `/logs`, `/restart`, `/remember`, `/ticket`,
+  `/tickets`, plus `/briefing`, `/search`, and the existing session/model controls — by shelling
+  straight to `ogmactl` (or launching the briefing/search flows). These run with **no `claude -p`
+  invocation**, so they are instant and incur no model cost (previously even "status" spun up a full
+  LLM turn). The set is registered with Telegram via `setMyCommands` at startup, so the commands show
+  up in the in-app "/" menu. Operators add their OWN host commands in a gitignored
+  `config/commands.local.json` (template: `config/commands.local.example.json`) — a declarative
+  `{cmd, run, desc, menu, args}` map merged with the built-in commands at runtime, with `/help`
+  generated to include them. Same core(tracked)+local(gitignored) pattern as `ogmactl`/`ogmactl.local`,
+  so the source stays updatable without touching your own commands. A malformed local file is logged
+  and ignored (never crashes the gateway), and `ogmactl`'s own whitelist still gates every command —
+  so this adds no new reach for the bot.
+
 ## [1.0.3] — 2026-06-17
 
 ### Fixed
