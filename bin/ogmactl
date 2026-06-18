@@ -17,7 +17,8 @@ TICKETS="$BASE/tickets"
 LOCAL="$BASE/bin/ogmactl.local"
 
 usage() {
-  echo "ogmactl: allowed commands — status | logs [N] | restart | health | ticket <text> | tickets"
+  echo "ogmactl: allowed commands — status | logs [source] [N] | restart | health | ticket <text> | tickets"
+  echo "          log sources: gateway (default), dream, briefing"
   [ -x "$LOCAL" ] && "$LOCAL" help 2>/dev/null
 }
 
@@ -35,11 +36,28 @@ case "$cmd" in
     echo "model   : $(cfg MODEL || echo default)"
     ;;
   logs)
-    n="${2:-30}"
-    if ! [[ "$n" =~ ^[0-9]+$ ]] || (( n > 200 )); then
-      echo "usage: ogmactl logs [N]   (N = 1..200 lines)"; exit 2
+    # Accept both `logs [N]` (gateway, back-compat) and `logs <source> [N]`.
+    # The nightly jobs (dream, briefing) write to their own files, so without a
+    # source selector the bot could only ever see the gateway log — which is why
+    # it wrongly reported the dream "not running". Map a small whitelist of names
+    # to Ogma's per-subsystem logs; default to the gateway log.
+    src="gateway"; n=30
+    if [[ "${2:-}" =~ ^[0-9]+$ ]]; then
+      n="$2"
+    elif [ -n "${2:-}" ]; then
+      src="$2"
+      [[ "${3:-}" =~ ^[0-9]+$ ]] && n="$3"
     fi
-    tail -n "$n" "$LOG" 2>/dev/null || echo "(no log yet)"
+    case "$src" in
+      gateway)  file="$LOG" ;;
+      dream)    file="$BASE/dream.log" ;;
+      briefing) file="$BASE/briefing.log" ;;
+      *) echo "usage: ogmactl logs [source] [N]   (source: gateway|dream|briefing)"; exit 2 ;;
+    esac
+    if ! [[ "$n" =~ ^[0-9]+$ ]] || (( n < 1 || n > 200 )); then
+      echo "usage: ogmactl logs [source] [N]   (N = 1..200 lines)"; exit 2
+    fi
+    tail -n "$n" "$file" 2>/dev/null || echo "(no $src log yet)"
     ;;
   restart)
     # Schedule a detached restart in its own transient scope so it survives this

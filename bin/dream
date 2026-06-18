@@ -75,6 +75,10 @@ EOF
 
 ts="$(date '+%F %T')"
 echo "$ts dream: starting (model=$model)"
+# Also surface a marker in the central gateway log (what `ogmactl logs` shows by
+# default), so the otherwise-silent nightly run is visible to the bot and operator.
+# A "starting" with no matching "done" line below flags a failed/interrupted run.
+echo "$ts dream: nightly consolidation starting (model=$model)" >> "$BASE/gateway.log" 2>/dev/null || true
 
 # Safety net: snapshot memory before any rewrite; keep the last 7 nights.
 BACKUPS="$BASE/memory-backups"
@@ -101,4 +105,6 @@ fi
 result="$(python3 -c 'import sys,json; print(json.load(open("/tmp/ogma-dream-out.json")).get("subtype","?"))' 2>/dev/null)"
 ysize="$( [ -f "$YESTERDAY" ] && wc -c < "$YESTERDAY" || echo 0 )"
 midx="$( [ -f "$MEM/MEMORY.md" ] && wc -c < "$MEM/MEMORY.md" || echo 0 )"
-echo "$(date '+%F %T') dream: done (result=$result, yesterday=${ysize}c, MEMORY.md=${midx}c)"
+done_ts="$(date '+%F %T')"
+echo "$done_ts dream: done (result=$result, yesterday=${ysize}c, MEMORY.md=${midx}c)"
+echo "$done_ts dream: nightly consolidation done (result=$result, yesterday=${ysize}c, MEMORY.md=${midx}c)" >> "$BASE/gateway.log" 2>/dev/null || true
