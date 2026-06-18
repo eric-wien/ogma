@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] — 2026-06-18
+
+### Changed
+- **Install no longer dirties tracked files — host specifics moved to gitignored overlays.** `bin/setup`
+  previously substituted `{{OWNER_NAME}}`/`{{OGMA_DIR}}`/`{{MEMORY_DIR}}` directly into the tracked
+  `workspace/CLAUDE.md` and `workspace/.claude/settings.json`, so every configured instance showed
+  those files as permanently modified and could not cleanly `git pull`. Setup now **generates two
+  gitignored overlays** instead: `workspace/CLAUDE.local.md` (host notes — operator name, absolute
+  paths — imported by the persona via `@CLAUDE.local.md`) and `workspace/.claude/settings.local.json`
+  (the resolved `ogmactl` permission rule, memory `additionalDirectories`, and the persist-nudge Stop
+  hook), both merged by Claude Code at runtime. The tracked `CLAUDE.md` is now generic/placeholder-free
+  and `settings.json` is a minimal skeleton, so a configured instance has a clean `git status`. Same
+  core(tracked) + local(gitignored) pattern as `ogmactl`/`ogmactl.local` and `.env`/`.env.example`.
+
 ## [1.1.0] — 2026-06-18
 
 ### Added
