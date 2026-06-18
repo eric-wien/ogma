@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.2] — 2026-06-18
+
+### Fixed
+- **Slash-command menu now appears in private chats.** The gateway registered its `/` commands only at
+  Telegram's `default` command scope, but a chat resolves its menu most-specific-scope-first — so an
+  older set of commands left at the `all_private_chats` scope shadowed the full list in DMs, and the
+  in-app menu showed a stale two-command set. `register_menu()` now registers at both the `default`
+  and `all_private_chats` scopes, so the complete menu shows up in direct chats. (The commands always
+  worked when typed; only the menu was affected.)
+
 ## [1.1.1] — 2026-06-18
 
 ### Changed

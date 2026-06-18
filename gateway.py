@@ -327,14 +327,25 @@ def launch_detached(script: str) -> bool:
 
 
 def register_menu() -> None:
-    """Register the slash-command menu with Telegram (server-side; idempotent)."""
-    cmds = [{"command": c, "description": d} for c, d in MENU_COMMANDS]
-    try:
-        r = tg("setMyCommands", {"commands": json.dumps(cmds)}, timeout=15)
-        log("menu registered" if r.get("ok")
-            else f"menu register failed: {r.get('description')}")
-    except Exception as e:  # noqa: BLE001
-        log("setMyCommands error:", e)
+    """Register the slash-command menu with Telegram (server-side; idempotent).
+
+    A chat resolves its command list most-specific-scope-first, so we register at
+    BOTH `default` (groups / fallback) AND `all_private_chats`. The latter is
+    required: any commands previously set at the private-chats scope would otherwise
+    shadow the default-scope list and the menu would show a stale set in DMs.
+    """
+    payload = json.dumps([{"command": c, "description": d} for c, d in MENU_COMMANDS])
+    for scope in (None, {"type": "all_private_chats"}):
+        params = {"commands": payload}
+        if scope:
+            params["scope"] = json.dumps(scope)
+        label = scope["type"] if scope else "default"
+        try:
+            r = tg("setMyCommands", params, timeout=15)
+            log(f"menu registered ({label})" if r.get("ok")
+                else f"menu register failed ({label}): {r.get('description')}")
+        except Exception as e:  # noqa: BLE001
+            log(f"setMyCommands error ({label}):", e)
 
 
 def handle_model(chat_id: str, arg: str) -> None:
