@@ -79,9 +79,17 @@ cp .env.example .env
 chmod 600 .env
 # edit .env: paste TELEGRAM_BOT_TOKEN, leave TELEGRAM_ALLOWED_USERS empty for now
 ```
-Then fill the persona placeholders in `workspace/CLAUDE.md` (`{{OWNER_NAME}}`, `{{OGMA_DIR}}`) and
-the hook path in `workspace/.claude/settings.json` (`{{OGMA_DIR}}` → your absolute install dir,
-e.g. `/home/youruser/ogma`).
+`bin/setup` (above) generates the host-local overlays for you — `workspace/CLAUDE.local.md` (the
+operator's name, absolute paths, and any persona overrides) and `workspace/.claude/settings.local.json`
+(the resolved hook path and permissions), both gitignored and merged at runtime, so the tracked
+`workspace/CLAUDE.md` stays generic. If you configure by hand instead, create those two `*.local.*`
+files yourself rather than editing the tracked ones.
+
+**Personalising the assistant (optional).** `bin/setup` asks for an assistant **name** (replaces
+"Ogma"), a **conversation style** (free text, e.g. "terse and dry"), and a **default language** (e.g.
+"German" — reply in it even when written to in English). All optional; blank keeps the defaults. Change
+any of them later — or live, over Telegram — with `bin/ogmactl set-persona <name|style|language> <value>`
+(then `ogmactl restart`). `set-persona show` prints the current values; `set-persona clear` resets them.
 
 **3. First run (discover your chat ID)**
 ```bash

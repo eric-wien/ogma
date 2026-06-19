@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] — 2026-06-19
+
+### Added
+- **Persona overrides — name, conversation style, and default language.** Each Ogma instance can now
+  be personalised without touching the tracked persona. Three optional fields live in `.env`
+  (`OGMA_PERSONA_NAME` / `_STYLE` / `_LANG`) and are rendered into a managed block in the gitignored
+  `workspace/CLAUDE.local.md` overlay: a **name** that replaces "Ogma" everywhere, a free-text
+  **conversation style** (e.g. "terse and dry", "more formal"), and a **default language** that the
+  assistant replies in even when written to in another (falling back to the user's language when
+  unset). `bin/setup` now prompts for all three, and a new whitelisted `ogmactl set-persona
+  <name|style|language|show|clear> [value]` lets the bot (or operator) change them live — handy for
+  running Ogma on several machines, each with its own identity. Changes apply on the next
+  `ogmactl restart`. A shared `bin/_persona.sh` renders the block for both setup and `ogmactl`, so
+  they stay in lockstep, and the tracked `CLAUDE.md` now defers to the host notes for name/language.
+  i18n is intentionally instruction-only (no per-locale string files or pre-translated context
+  variants) — the model handles cross-language output from the one-line directive.
+
 ## [1.1.2] — 2026-06-18
 
 ### Fixed

@@ -17,9 +17,10 @@ TICKETS="$BASE/tickets"
 LOCAL="$BASE/bin/ogmactl.local"
 
 usage() {
-  echo "ogmactl: allowed commands — status | logs [source] [N] | restart | health | remember [--type T] <text> | ticket <text> | tickets"
+  echo "ogmactl: allowed commands — status | logs [source] [N] | restart | health | remember [--type T] <text> | set-persona <field> [value] | ticket <text> | tickets"
   echo "          log sources: gateway (default), dream, briefing"
   echo "          remember types: user | feedback | project (default) | reference"
+  echo "          set-persona fields: name | style | language | show | clear"
   [ -x "$LOCAL" ] && "$LOCAL" help 2>/dev/null
 }
 
@@ -119,6 +120,40 @@ case "$cmd" in
     [ -f "$idx" ] || printf '# Memory Index\n\n' > "$idx"
     printf -- '- [%s](%s.md) — %s\n' "$slug" "$slug" "$desc" >> "$idx"
     echo "🧠 Remembered ($type) — saved as $slug.md. The nightly consolidation will refine it."
+    ;;
+  set-persona)
+    # Let the bot (or the operator) rename itself and tweak its tone/default language.
+    # Values are stored in .env and rendered into workspace/CLAUDE.local.md (the gitignored
+    # overlay imported by the persona), so they survive a `bin/setup` re-run and a `git pull`.
+    # The change is read at the next session start — hence the restart hint.
+    shift
+    field="${1:-}"; shift 2>/dev/null || true
+    val="$*"
+    src="$BASE/bin/_persona.sh"
+    [ -r "$src" ] || { echo "persona helper missing ($src)"; exit 1; }
+    # shellcheck source=/dev/null
+    . "$src"
+    case "$field" in
+      name)     persona_set_env "$ENV" OGMA_PERSONA_NAME  "$val" ;;
+      style)    persona_set_env "$ENV" OGMA_PERSONA_STYLE "$val" ;;
+      language) persona_set_env "$ENV" OGMA_PERSONA_LANG  "$val" ;;
+      clear)
+        persona_set_env "$ENV" OGMA_PERSONA_NAME  ""
+        persona_set_env "$ENV" OGMA_PERSONA_STYLE ""
+        persona_set_env "$ENV" OGMA_PERSONA_LANG  "" ;;
+      show)
+        n="$(persona_cfg "$ENV" NAME)"; s="$(persona_cfg "$ENV" STYLE)"; l="$(persona_cfg "$ENV" LANG)"
+        printf 'name     : %s\n' "${n:-(default: Ogma)}"
+        printf 'style    : %s\n' "${s:-(default)}"
+        printf 'language : %s\n' "${l:-(default: match the user)}"
+        exit 0 ;;
+      *) echo "usage: ogmactl set-persona <name|style|language|show|clear> [value]"; exit 2 ;;
+    esac
+    WS="$(cfg WORKDIR)"; [ -n "$WS" ] || WS="$BASE/workspace"
+    MD="$WS/CLAUDE.local.md"
+    [ -f "$MD" ] || { echo "no CLAUDE.local.md yet — run bin/setup first."; exit 1; }
+    persona_render "$ENV" "$MD"
+    echo "✅ Persona updated. Restart to apply it: ogmactl restart"
     ;;
   ticket)
     shift

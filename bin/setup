@@ -109,6 +109,16 @@ set_env OGMA_OWNER_NAME "$owner"; ok "Owner name set to: $owner"
 loc="$(ask "Weather location for the briefing, e.g. Vienna (blank = auto by IP)")"
 [ -n "$loc" ] && { set_env OGMA_WEATHER_LOC "$loc"; ok "Weather location: $loc"; }
 
+# --- Persona (optional: name, style, language) -------------------------------
+step "Persona (optional)"
+say "${c_dim}Blank keeps Ogma's defaults. Change any of these later with: bin/ogmactl set-persona <field> <value>${c_rst}"
+pname="$(ask "Assistant name (blank = Ogma)")"
+set_env OGMA_PERSONA_NAME "$pname"; [ -n "$pname" ] && ok "Name: $pname" || ok "Name: Ogma (default)"
+pstyle="$(ask "Conversation style override, e.g. 'terse and dry' (blank = default)")"
+set_env OGMA_PERSONA_STYLE "$pstyle"; [ -n "$pstyle" ] && ok "Style: $pstyle"
+plang="$(ask "Default language, e.g. German (blank = match whoever writes to you)")"
+set_env OGMA_PERSONA_LANG "$plang"; [ -n "$plang" ] && ok "Language: $plang"
+
 # --- Model & reasoning effort ------------------------------------------------
 step "Model & reasoning effort"
 # Live model list needs an API key; Claude Code subscription auth can't list models,
@@ -181,6 +191,12 @@ so the shared persona stays generic while this host's specifics live here (gitig
 - Beyond the core subcommands, this host may define extra \`ogmactl\` commands. To see the
   current list, run \`$OGMA_DIR/bin/ogmactl help\`.
 EOF
+# Append the persona-override block (name/style/language) into the same overlay,
+# rendered from the OGMA_PERSONA_* values just written to .env. Shared with
+# `ogmactl set-persona` so both write the block identically.
+# shellcheck source=/dev/null
+. "$OGMA_DIR/bin/_persona.sh"
+persona_render "$ENV" "$OGMA_DIR/workspace/CLAUDE.local.md"
 cat > "$OGMA_DIR/workspace/.claude/settings.local.json" <<EOF
 {
   "permissions": {
