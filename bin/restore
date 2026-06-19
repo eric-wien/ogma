@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# restore — apply a host-local backup (made by bin/backup) into this Ogma checkout.
+#
+# Extracts the archived host-local files (.env, state/, tickets/, presence DB, host-local
+# bin/config extensions, overlays) back into $OGMA_DIR. Use it to recover after a mistake
+# or to bring a fresh clone up on a new box.
+#
+# By default it picks the NEWEST archive in ~/ogma-backups and, as a safety net, snapshots
+# the current host-local files first (so a restore is itself reversible). Overwrites
+# existing host-local files — confirm before running on a live install.
+#
+# NOT exposed via ogmactl: restore overwrites .env and can drop arbitrary files into the
+# repo, so it stays a CLI/operator-only tool (unlike `ogmactl backup`).
+set -uo pipefail
+
+OGMA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [ -t 1 ]; then
+  c_bold=$'\033[1m'; c_dim=$'\033[2m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_red=$'\033[31m'; c_rst=$'\033[0m'
+else
+  c_bold=''; c_dim=''; c_grn=''; c_yel=''; c_red=''; c_rst=''
+fi
+say()  { printf '%s\n' "$*"; }
+step() { printf '\n%s==> %s%s\n' "$c_bold" "$*" "$c_rst"; }
+ok()   { printf '%s  ✓ %s%s\n' "$c_grn" "$*" "$c_rst"; }
+warn() { printf '%s  ! %s%s\n' "$c_yel" "$*" "$c_rst" >&2; }
+err()  { printf '%s  ✗ %s%s\n' "$c_red" "$*" "$c_rst" >&2; }
+ask()  { local p="$1" d="${2:-}" a; if [ -n "$d" ]; then read -r -p "$p [$d]: " a || true; printf '%s' "${a:-$d}"; else read -r -p "$p: " a || true; printf '%s' "$a"; fi; }
+
+OUT="${OGMA_BACKUP_DIR:-$HOME/ogma-backups}"
+ARCHIVE=""; ASSUME_YES=0; SAFETY=1; DRYRUN=0; DO_LIST=0
+
+usage() {
+  cat <<EOF
+Usage: bin/restore [ARCHIVE] [options]
+
+Applies a host-local backup into this Ogma checkout ($OGMA_DIR).
+With no ARCHIVE, restores the NEWEST archive in \$OGMA_BACKUP_DIR (~/ogma-backups).
+
+  ARCHIVE          path to a specific ogma-backup-*.tar.gz to restore
+  --from DIR       directory to pick the newest archive from (default: ~/ogma-backups)
+  --list           list available archives and exit
+  --dry-run        show what would be extracted, change nothing
+  --no-backup      skip the safety snapshot of current host-local files
+  -y, --yes        don't prompt for confirmation
+  -h, --help       this help
+
+After restoring onto a DIFFERENT machine, run \`bin/setup\` to re-render the host
+overlays (paths/persona) and reinstall the systemd units for this host.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --from)      OUT="${2:?--from needs a directory}"; shift 2 ;;
+    --list)      DO_LIST=1; shift ;;
+    --dry-run)   DRYRUN=1; shift ;;
+    --no-backup) SAFETY=0; shift ;;
+    -y|--yes)    ASSUME_YES=1; shift ;;
+    -h|--help)   usage; exit 0 ;;
+    -*)          err "unknown argument: $1"; usage; exit 2 ;;
+    *)           ARCHIVE="$1"; shift ;;
+  esac
+done
+
+if [ "$DO_LIST" = 1 ]; then exec "$OGMA_DIR/bin/backup" --list --out "$OUT"; fi
+
+# --- Resolve which archive to restore ----------------------------------------
+if [ -z "$ARCHIVE" ]; then
+  shopt -s nullglob
+  cands=("$OUT"/ogma-backup-*.tar.gz)
+  if (( ${#cands[@]} == 0 )); then err "no archives found in $OUT (use ARCHIVE or --from DIR)."; exit 1; fi
+  # Pick the most recently modified — robust regardless of filename scheme.
+  ARCHIVE="$(ls -t "$OUT"/ogma-backup-*.tar.gz 2>/dev/null | head -1)"
+fi
+[ -f "$ARCHIVE" ] || { err "archive not found: $ARCHIVE"; exit 1; }
+if ! tar tzf "$ARCHIVE" >/dev/null 2>&1; then err "not a readable .tar.gz: $ARCHIVE"; exit 1; fi
+
+count="$(tar tzf "$ARCHIVE" 2>/dev/null | grep -c .)"
+say "${c_bold}Ogma restore${c_rst}  ${c_dim}($OGMA_DIR)${c_rst}"
+say "  archive : $ARCHIVE"
+say "  files   : $count"
+
+if [ "$DRYRUN" = 1 ]; then
+  step "Would extract (dry run — nothing changed)"
+  tar tzf "$ARCHIVE"
+  exit 0
+fi
+
+step "This will OVERWRITE matching host-local files in $OGMA_DIR"
+[ "$SAFETY" = 1 ] && say "  ${c_dim}(a safety snapshot of current host-local files is taken first)${c_rst}" \
+                  || say "  ${c_yel}(WITHOUT a safety snapshot — --no-backup given)${c_rst}"
+if [ "$ASSUME_YES" != 1 ]; then
+  ans="$(ask "Proceed?" "n")"
+  [[ "$ans" =~ ^[Yy] ]] || { say "Aborted — nothing changed."; exit 0; }
+fi
+
+# --- Safety snapshot of the current state ------------------------------------
+if [ "$SAFETY" = 1 ]; then
+  step "Snapshotting current host-local files first"
+  if "$OGMA_DIR/bin/backup" --out "$OUT" >/dev/null 2>&1; then ok "Safety snapshot saved in $OUT"
+  else warn "Safety snapshot skipped (nothing to back up, or backup failed)."; fi
+fi
+
+# --- Extract -----------------------------------------------------------------
+step "Restoring"
+if tar -xzf "$ARCHIVE" -C "$OGMA_DIR"; then
+  [ -f "$OGMA_DIR/.env" ] && chmod 600 "$OGMA_DIR/.env" 2>/dev/null || true
+  ok "Restored $count file(s) into $OGMA_DIR"
+else
+  err "tar extraction failed."; exit 1
+fi
+
+step "Next steps"
+say "  • Run ${c_bold}bin/setup${c_rst} to re-render host overlays + (re)install systemd units for this host."
+say "  • Then: ${c_dim}systemctl --user restart ogma-gateway${c_rst} (if it was running)."

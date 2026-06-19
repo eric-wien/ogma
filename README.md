@@ -190,7 +190,19 @@ host-local `bin`/`config` extensions. The manifest *is* the gitignored set (`git
   Each is a `chmod 600` `.tar.gz` (it contains `.env`). List them with `bin/backup --list`.
 - **Retention:** keeps the newest 14 (`--keep N` or `OGMA_BACKUP_KEEP`; `0` = keep all).
 
-To restore on a fresh box: re-clone, `tar xzf <archive>` into the repo, then `bin/setup`.
+### Restore
+`bin/restore` applies a backup back into the checkout:
+```bash
+bin/restore                 # restore the newest archive in ~/ogma-backups
+bin/restore path/to.tar.gz  # restore a specific archive
+bin/restore --list          # see what's available
+bin/restore --dry-run       # show what would be extracted, change nothing
+```
+It snapshots the current host-local files first (so a restore is itself reversible;
+`--no-backup` to skip) and prompts before overwriting (`-y` to skip). On a **fresh box**:
+clone the repo, `bin/restore /path/to/your-archive.tar.gz`, then run `bin/setup` — that
+re-renders the host overlays (paths/persona) and reinstalls the systemd units for the new
+host. Restore is CLI-only (it overwrites `.env`), so it is *not* exposed to the bot.
 
 ## Uninstall
 ```bash

@@ -120,6 +120,9 @@ mkdir -p "$OUT" || { err "cannot create $OUT"; exit 1; }
 host="$(hostname -s 2>/dev/null || echo host)"
 ts="$(date +%Y%m%d-%H%M%S)"
 archive="$OUT/ogma-backup-${host}-${ts}.tar.gz"
+# Never clobber an existing archive (two backups in the same second — e.g. restore's
+# safety snapshot — would otherwise collide on the second-resolution timestamp).
+n=2; while [ -e "$archive" ]; do archive="$OUT/ogma-backup-${host}-${ts}-${n}.tar.gz"; ((n++)); done
 
 if tar -C "$OGMA_DIR" --null -czf "$archive" -T "$mf" 2>/dev/null; then
   chmod 600 "$archive" 2>/dev/null || true   # contains .env — keep it private

@@ -28,7 +28,14 @@ All notable changes to this project are documented here. The format is based on
   `git pull`, reinstalls, and uninstall, with retention to the newest 14 (`--keep`/`OGMA_BACKUP_KEEP`).
   Runnable on demand, via the bot (new whitelisted `ogmactl backup`), or nightly through the new
   `ogma-backup.timer` (installed by `bin/setup`, notifies on completion). `--list` shows existing
-  archives.
+  archives. Archive filenames are now collision-guarded so two backups in the same second never
+  overwrite each other.
+- **Restore (`bin/restore`).** Applies a backup back into the checkout — newest archive by default,
+  or a specific file/`--from DIR`; `--list` and `--dry-run` to inspect first. Snapshots the current
+  host-local files before overwriting (so a restore is itself reversible; `--no-backup` to skip) and
+  prompts unless `-y`. Intended for recovery and for standing a fresh clone up on a new box (restore,
+  then `bin/setup` to re-render host overlays + reinstall units). CLI-only — not exposed to the bot,
+  since it overwrites `.env`.
 - **Uninstall path (`bin/uninstall`).** Backs up host-local files first (unless `--no-backup`), stops
   and removes the systemd `--user` units and the copied skills, then **deletes the Ogma directory
   itself** — the script `exec`s `rm`, so the repo can erase the very script that's running (no npx
