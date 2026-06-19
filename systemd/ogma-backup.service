@@ -1,0 +1,6 @@
+[Unit]
+Description=Ogma host-local backup (archive .env/state/tickets/etc. -> ~/ogma-backups)
+
+[Service]
+Type=oneshot
+ExecStart={{OGMA_DIR}}/bin/backup --notify

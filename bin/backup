@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# backup — archive this host's local Ogma files into a timestamped tarball.
+#
+# The host-local surface is exactly the git-ignored set (.env, logs, state/, tickets,
+# memory-backups/, the presence DB, and any host-local bin/config extensions). Nothing
+# host-specific is tracked, so `git ls-files --ignored` IS the manifest — backup and
+# .gitignore can never drift apart.
+#
+# Archives land OUTSIDE the repo (default ~/ogma-backups) so they survive `git pull`,
+# a reinstall, and `bin/uninstall`. Run on demand, from the Telegram bot (ogmactl
+# backup), or on a schedule (systemd/ogma-backup.timer).
+set -uo pipefail
+
+OGMA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Colors only on a terminal — keep journald/Telegram output clean.
+if [ -t 1 ]; then
+  c_bold=$'\033[1m'; c_dim=$'\033[2m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_red=$'\033[31m'; c_rst=$'\033[0m'
+else
+  c_bold=''; c_dim=''; c_grn=''; c_yel=''; c_red=''; c_rst=''
+fi
+say()  { printf '%s\n' "$*"; }
+ok()   { printf '%s  ✓ %s%s\n' "$c_grn" "$*" "$c_rst"; }
+warn() { printf '%s  ! %s%s\n' "$c_yel" "$*" "$c_rst" >&2; }
+err()  { printf '%s  ✗ %s%s\n' "$c_red" "$*" "$c_rst" >&2; }
+
+OUT="${OGMA_BACKUP_DIR:-$HOME/ogma-backups}"
+KEEP="${OGMA_BACKUP_KEEP:-14}"
+NOTIFY=0
+ACTION="create"
+
+usage() {
+  cat <<EOF
+Usage: bin/backup [--out DIR] [--keep N] [--notify]
+       bin/backup --list [--out DIR]
+
+Archives all host-local (git-ignored) Ogma files to a timestamped tar.gz.
+
+  --out DIR     destination directory (default: \$OGMA_BACKUP_DIR or ~/ogma-backups)
+  --keep N      keep only the newest N archives in DIR (default: 14; 0 = keep all)
+  --list        list existing archives in DIR and exit
+  --notify      post a one-line result to Telegram (used by the timer)
+  -h, --help    this help
+
+Env: OGMA_BACKUP_DIR, OGMA_BACKUP_KEEP override the defaults above.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out)    OUT="${2:?--out needs a directory}"; shift 2 ;;
+    --keep)   KEEP="${2:?--keep needs a number}"; shift 2 ;;
+    --notify) NOTIFY=1; shift ;;
+    --list)   ACTION="list"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) err "unknown argument: $1"; usage; exit 2 ;;
+  esac
+done
+
+if ! [[ "$KEEP" =~ ^[0-9]+$ ]]; then err "--keep must be a non-negative integer"; exit 2; fi
+
+# Sorted by name; our timestamped names sort chronologically.
+list_archives() {
+  shopt -s nullglob
+  local a=("$OUT"/ogma-backup-*.tar.gz)
+  printf '%s\n' "${a[@]}" | sort
+}
+
+if [ "$ACTION" = "list" ]; then
+  shopt -s nullglob
+  files=("$OUT"/ogma-backup-*.tar.gz)
+  if (( ${#files[@]} == 0 )); then say "No backups in $OUT"; exit 0; fi
+  say "${c_bold}Backups in $OUT (${#files[@]}):${c_rst}"
+  for f in $(list_archives); do
+    printf '  %s  %s\n' "$(du -h "$f" 2>/dev/null | cut -f1)" "$(basename "$f")"
+  done
+  exit 0
+fi
+
+# --- Build the manifest (NUL-delimited): git-ignored + untracked host files. ----------
+# Bash variables can't hold NUL bytes, so the manifest lives in a temp file we feed
+# straight to `tar --null -T`.
+mf="$(mktemp "${TMPDIR:-/tmp}/ogma-backup-manifest.XXXXXX")"
+trap 'rm -f "$mf"' EXIT
+if git -C "$OGMA_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  {
+    git -C "$OGMA_DIR" ls-files --others --ignored --exclude-standard -z
+    git -C "$OGMA_DIR" ls-files --others --exclude-standard -z
+  } | grep -zvE '(^|/)(\.venv|__pycache__|\.git)/' | grep -zvE '\.pyc$' | sort -zu > "$mf"
+else
+  # Not a git checkout (e.g. a tarball download): fall back to the known host-local
+  # paths from .gitignore. Globs that match nothing expand to nothing below.
+  warn "not a git checkout — using static host-local path list"
+  fallback=(
+    .env sessions.json *.log state memory-backups
+    tickets bin/ogmactl.local config/commands.local.json
+    bin/pihole-watch config/watched-domains.txt systemd/ogma-pihole-watch.service
+    workspace/CLAUDE.local.md workspace/.claude/settings.local.json
+    bin/fritz-poc bin/presence bin/_fritz.py bin/_arp.py
+    config/people.yaml config/people.yaml.bak
+    config/people-enrolled.tsv config/people-enrolled.tsv.bak config/presence.db
+  )
+  pushd "$OGMA_DIR" >/dev/null || { err "cannot enter $OGMA_DIR"; exit 1; }
+  for p in "${fallback[@]}"; do
+    for m in $p; do [ -e "$m" ] && printf '%s\0' "$m"; done
+  done > "$mf"
+  popd >/dev/null
+fi
+
+if [ ! -s "$mf" ]; then
+  warn "no host-local files found to back up — nothing to do."
+  [ "$NOTIFY" = 1 ] && printf '🗄️ Ogma backup: nothing to archive (no host-local files).' | "$OGMA_DIR/bin/tg-send" 2>/dev/null
+  exit 0
+fi
+
+count="$(grep -zc '' "$mf" 2>/dev/null || echo '?')"
+
+# --- Create the archive ----------------------------------------------------------------
+mkdir -p "$OUT" || { err "cannot create $OUT"; exit 1; }
+host="$(hostname -s 2>/dev/null || echo host)"
+ts="$(date +%Y%m%d-%H%M%S)"
+archive="$OUT/ogma-backup-${host}-${ts}.tar.gz"
+
+if tar -C "$OGMA_DIR" --null -czf "$archive" -T "$mf" 2>/dev/null; then
+  chmod 600 "$archive" 2>/dev/null || true   # contains .env — keep it private
+  size="$(du -h "$archive" 2>/dev/null | cut -f1)"
+  ok "Backed up $count file(s) → $archive ($size)"
+  result="🗄️ Ogma backup OK — ${count} files, ${size:-?} → $(basename "$archive")"
+else
+  err "tar failed — archive not written."
+  [ "$NOTIFY" = 1 ] && printf '⚠️ Ogma backup FAILED on %s (tar error).' "$host" | "$OGMA_DIR/bin/tg-send" 2>/dev/null
+  rm -f "$archive" 2>/dev/null
+  exit 1
+fi
+
+# --- Retention: prune to the newest $KEEP archives -------------------------------------
+if (( KEEP > 0 )); then
+  mapfile -t all < <(list_archives)
+  if (( ${#all[@]} > KEEP )); then
+    prune=$(( ${#all[@]} - KEEP ))
+    for ((i=0; i<prune; i++)); do rm -f "${all[$i]}" && say "${c_dim}  pruned $(basename "${all[$i]}")${c_rst}"; done
+  fi
+fi
+
+[ "$NOTIFY" = 1 ] && printf '%s' "$result" | "$OGMA_DIR/bin/tg-send" 2>/dev/null
+exit 0

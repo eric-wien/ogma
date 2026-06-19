@@ -63,6 +63,7 @@ print(("OK "+((d.get("result") or {}).get("username") or "?")) if d.get("ok") el
   fi
   if command -v systemctl >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then
     printf '  service   : %s\n' "$(systemctl --user is-active ogma-gateway 2>/dev/null || echo inactive)"
+    printf '  backup    : %s\n' "$(systemctl --user is-active ogma-backup.timer 2>/dev/null || echo inactive)"
   fi
   for s in tickets session-search daily-briefing; do
     [ -e "$HOME/.claude/skills/$s" ] && ok "skill: $s" || warn "skill not installed: $s"
@@ -262,7 +263,7 @@ if [ "$HAVE_SYSTEMD" = 1 ]; then
     if yes "Enable linger (keep services running when you're logged out)?" "y"; then
       loginctl enable-linger "$USER" 2>/dev/null && ok "Linger enabled." || warn "Could not enable linger (may need: sudo loginctl enable-linger $USER)."
     fi
-    say "${c_dim}Optional routines: systemctl --user enable --now ogma-briefing.timer ogma-dream.timer ogma-health.timer${c_rst}"
+    say "${c_dim}Optional routines: systemctl --user enable --now ogma-briefing.timer ogma-dream.timer ogma-health.timer ogma-backup.timer${c_rst}"
   else
     warn "Skipped. Templates are in systemd/ — install them manually later (see README)."
   fi

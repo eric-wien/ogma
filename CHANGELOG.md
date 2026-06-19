@@ -20,6 +20,22 @@ All notable changes to this project are documented here. The format is based on
   they stay in lockstep, and the tracked `CLAUDE.md` now defers to the host notes for name/language.
   i18n is intentionally instruction-only (no per-locale string files or pre-translated context
   variants) — the model handles cross-language output from the one-line directive.
+- **Backups of host-local files.** New `bin/backup` archives everything host-specific — i.e. the
+  gitignored set (`.env`, `state/`, `tickets/`, `memory-backups/`, the presence DB, and any
+  host-local `bin`/`config` extensions) — into a timestamped, `chmod 600` `.tar.gz`. The manifest is
+  derived from `git ls-files --ignored`, so it can never drift from `.gitignore`. Archives land
+  **outside** the repo (`~/ogma-backups/` by default; `--out`/`OGMA_BACKUP_DIR`) so they survive
+  `git pull`, reinstalls, and uninstall, with retention to the newest 14 (`--keep`/`OGMA_BACKUP_KEEP`).
+  Runnable on demand, via the bot (new whitelisted `ogmactl backup`), or nightly through the new
+  `ogma-backup.timer` (installed by `bin/setup`, notifies on completion). `--list` shows existing
+  archives.
+- **Uninstall path (`bin/uninstall`).** Backs up host-local files first (unless `--no-backup`), stops
+  and removes the systemd `--user` units and the copied skills, then **deletes the Ogma directory
+  itself** — the script `exec`s `rm`, so the repo can erase the very script that's running (no npx
+  needed). System-level units (e.g. `ogma-pihole-watch`) are left to a printed `sudo` command rather
+  than touched. Your Claude memory directory and the backup archives are never deleted. Guards refuse
+  to run against `$HOME`, `/`, or anything that isn't an Ogma checkout. Flags: `-y/--yes`,
+  `--no-backup`, `--backup-dir`, `--keep-skills`.
 
 ## [1.1.2] — 2026-06-18
 

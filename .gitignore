@@ -36,6 +36,7 @@ workspace/.claude/settings.local.json
 bin/fritz-poc
 bin/presence
 bin/_fritz.py
+bin/_arp.py
 config/people.yaml*
 config/people-enrolled.tsv*
 config/presence.db*

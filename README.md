@@ -153,7 +153,7 @@ See [`skills/README.md`](skills/README.md) for details and how to write your own
 ## Self-management (`ogmactl`)
 `bin/ogmactl` is the **only** shell command the bot is permitted to run (a fixed whitelist of
 subcommands — granting it does *not* grant arbitrary shell): `status`, `logs [N]`, `restart`,
-`health`, `ticket <text>`, `tickets`. `bin/setup` pre-approves it (and read access to your memory
+`health`, `backup`, `ticket <text>`, `tickets`. `bin/setup` pre-approves it (and read access to your memory
 directory) in `workspace/.claude/settings.json`, so the bot can self-manage and recall memory over
 Telegram without hitting permission prompts — the headless gateway can't show an approval UI. This
 grant is read-only by design: no `Write`/`Edit`/arbitrary-`Bash`. (`OGMA_ALLOWED_TOOLS` in `.env`
@@ -174,6 +174,34 @@ install there's no such file and unknown commands are refused as before.
 - **`bin/health-check`** — every ~5 min, alerts to Telegram if CPU temp / load / disk / free RAM
   cross thresholds (all `HEALTH_*`-overridable). Pure shell; the temp check skips cleanly on hosts
   that don't expose it.
+- **`bin/backup`** — nightly archive of your host-local files (see **Backups** below).
+
+## Backups
+`bin/backup` archives **all your host-local files** — everything that's gitignored: `.env`
+(your token + persona), `state/`, `tickets/`, `memory-backups/`, the presence DB, and any
+host-local `bin`/`config` extensions. The manifest *is* the gitignored set (`git ls-files
+--ignored`), so it can never drift from `.gitignore`.
+
+- **On demand:** `bin/backup` (or `bin/ogmactl backup`, so the bot can trigger one over Telegram).
+- **Scheduled:** `systemctl --user enable --now ogma-backup.timer` (nightly ~03:30, notifies on
+  completion). `bin/setup` installs the unit automatically.
+- **Where:** archives land **outside** the repo — `~/ogma-backups/` by default (override with
+  `--out DIR` or `OGMA_BACKUP_DIR`) — so they survive `git pull`, reinstalls, and uninstall.
+  Each is a `chmod 600` `.tar.gz` (it contains `.env`). List them with `bin/backup --list`.
+- **Retention:** keeps the newest 14 (`--keep N` or `OGMA_BACKUP_KEEP`; `0` = keep all).
+
+To restore on a fresh box: re-clone, `tar xzf <archive>` into the repo, then `bin/setup`.
+
+## Uninstall
+```bash
+bin/uninstall
+```
+It backs up your host-local files first (unless `--no-backup`), stops and removes the
+systemd `--user` units and the copied skills, and then **deletes the Ogma directory itself**
+(the script `exec`s `rm` so the repo can erase the very script that's running — no npx needed).
+System-level units (e.g. `ogma-pihole-watch`) need root, so it prints the `sudo` commands for
+you to run rather than touching them. **Never deleted:** your Claude memory directory and the
+backup archives. Flags: `-y/--yes`, `--no-backup`, `--backup-dir DIR`, `--keep-skills`.
 
 ## What's not included / known limitations
 - **Single brain.** The persona, workspace, and memory are shared — adding several chat IDs to the

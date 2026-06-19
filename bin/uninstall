@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# uninstall — remove everything bin/setup installed, then erase the repo itself.
+#
+# Mirror of bin/setup. By default it backs up your host-local files FIRST (to
+# ~/ogma-backups, outside the repo, via bin/backup), then stops + removes the systemd
+# --user units and the copied skills, and finally deletes the Ogma directory.
+#
+# Self-destruct: the last line is `exec rm -rf "$OGMA_DIR"`. exec replaces this shell
+# with /usr/bin/rm — a binary that lives OUTSIDE the repo — so deleting the repo (this
+# script included) is safe; nothing is left reading from the directory being removed.
+#
+# What it NEVER touches: your Claude memory dir (~/.claude/projects/.../memory) and the
+# backup archives. Both survive the uninstall.
+set -uo pipefail
+
+OGMA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+c_bold=$'\033[1m'; c_dim=$'\033[2m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_red=$'\033[31m'; c_rst=$'\033[0m'
+say()  { printf '%s\n' "$*"; }
+step() { printf '\n%s==> %s%s\n' "$c_bold" "$*" "$c_rst"; }
+ok()   { printf '%s  ✓ %s%s\n' "$c_grn" "$*" "$c_rst"; }
+warn() { printf '%s  ! %s%s\n' "$c_yel" "$*" "$c_rst"; }
+err()  { printf '%s  ✗ %s%s\n' "$c_red" "$*" "$c_rst"; }
+ask()  { local p="$1" d="${2:-}" a; if [ -n "$d" ]; then read -r -p "$p [$d]: " a || true; printf '%s' "${a:-$d}"; else read -r -p "$p: " a || true; printf '%s' "$a"; fi; }
+
+ASSUME_YES=0; DO_BACKUP=1; KEEP_SKILLS=0; BACKUP_DIR=""
+usage() {
+  cat <<EOF
+Usage: bin/uninstall [options]
+
+Backs up host-local files, removes Ogma's systemd units + skills, then deletes
+the Ogma directory ($OGMA_DIR).
+
+  -y, --yes            don't prompt for confirmation
+      --no-backup      skip the host-local backup (NOT recommended)
+      --backup-dir DIR where to write the backup (default: ~/ogma-backups)
+      --keep-skills    leave ~/.claude/skills/{tickets,session-search,daily-briefing}
+  -h, --help           this help
+
+Preserved: your Claude memory dir and the backup archives are never deleted.
+EOF
+}
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -y|--yes)      ASSUME_YES=1; shift ;;
+    --no-backup)   DO_BACKUP=0; shift ;;
+    --backup-dir)  BACKUP_DIR="${2:?--backup-dir needs a path}"; shift 2 ;;
+    --keep-skills) KEEP_SKILLS=1; shift ;;
+    -h|--help)     usage; exit 0 ;;
+    *) err "unknown argument: $1"; usage; exit 2 ;;
+  esac
+done
+
+# --- Safety guards -----------------------------------------------------------
+# Never operate on $HOME or / , and require this to actually look like an Ogma checkout
+# before we remove anything.
+real_dir="$(cd "$OGMA_DIR" && pwd -P)"
+if [ "$real_dir" = "/" ] || [ "$real_dir" = "$(cd "$HOME" && pwd -P)" ]; then
+  err "Refusing to uninstall: $real_dir is your home or root directory."; exit 1
+fi
+if [ ! -f "$OGMA_DIR/gateway.py" ] || [ ! -x "$OGMA_DIR/bin/ogmactl" ]; then
+  err "This doesn't look like an Ogma checkout ($OGMA_DIR) — missing gateway.py or bin/ogmactl."; exit 1
+fi
+
+say "${c_bold}Ogma uninstall${c_rst}  ${c_dim}($OGMA_DIR)${c_rst}"
+
+# Discover what's installed so the confirmation prompt is honest.
+UD="$HOME/.config/systemd/user"
+HAVE_SYSTEMD=0; command -v systemctl >/dev/null && systemctl --user show-environment >/dev/null 2>&1 && HAVE_SYSTEMD=1
+shopt -s nullglob
+user_units=("$UD"/ogma-*.service "$UD"/ogma-*.timer)
+sys_units=(/etc/systemd/system/ogma-*.service /etc/systemd/system/ogma-*.timer)
+SKILLS=(tickets session-search daily-briefing)
+present_skills=()
+for s in "${SKILLS[@]}"; do [ -e "$HOME/.claude/skills/$s" ] && present_skills+=("$s"); done
+
+step "This will remove"
+say "  • the Ogma directory: ${c_bold}$OGMA_DIR${c_rst}"
+[ "$DO_BACKUP" = 1 ] && say "    ${c_dim}(after backing up host-local files to ${BACKUP_DIR:-${OGMA_BACKUP_DIR:-$HOME/ogma-backups}})${c_rst}" \
+                     || say "    ${c_yel}(WITHOUT a backup — --no-backup given)${c_rst}"
+if (( ${#user_units[@]} )); then say "  • systemd --user units:"; for u in "${user_units[@]}"; do say "      $(basename "$u")"; done; fi
+if (( ${#present_skills[@]} )); then
+  if [ "$KEEP_SKILLS" = 1 ]; then say "  • skills: ${c_dim}kept (--keep-skills): ${present_skills[*]}${c_rst}"
+  else say "  • skills in ~/.claude/skills/: ${present_skills[*]}"; fi
+fi
+say "${c_dim}Preserved: your Claude memory dir and the backup archives.${c_rst}"
+
+if [ "$ASSUME_YES" != 1 ]; then
+  ans="$(ask "Proceed?" "n")"
+  [[ "$ans" =~ ^[Yy] ]] || { say "Aborted — nothing changed."; exit 0; }
+fi
+
+# --- 1. Backup host-local files ----------------------------------------------
+if [ "$DO_BACKUP" = 1 ]; then
+  step "Backing up host-local files"
+  bk="$OGMA_DIR/bin/backup"
+  if [ -x "$bk" ]; then
+    backup_args=(); [ -n "$BACKUP_DIR" ] && backup_args=(--out "$BACKUP_DIR")
+    if "$bk" "${backup_args[@]}"; then ok "Backup complete."
+    else err "Backup failed — aborting uninstall so nothing is lost."; exit 1; fi
+  else
+    err "bin/backup not found — aborting (re-run with --no-backup to skip)."; exit 1
+  fi
+fi
+
+# --- 2. systemd --user units -------------------------------------------------
+if (( ${#user_units[@]} )); then
+  step "Removing systemd --user units"
+  for u in "${user_units[@]}"; do
+    base="$(basename "$u")"
+    [ "$HAVE_SYSTEMD" = 1 ] && systemctl --user disable --now "$base" >/dev/null 2>&1 || true
+    rm -f "$u" && ok "removed $base"
+  done
+  [ "$HAVE_SYSTEMD" = 1 ] && systemctl --user daemon-reload 2>/dev/null || true
+  [ "$HAVE_SYSTEMD" = 1 ] && systemctl --user reset-failed 2>/dev/null || true
+else
+  say "${c_dim}No systemd --user units to remove.${c_rst}"
+fi
+
+# --- 3. System units (need root — instruct, don't sudo silently) -------------
+if (( ${#sys_units[@]} )); then
+  step "System units found (need root to remove)"
+  warn "Run these yourself to finish removing the system-level units:"
+  for u in "${sys_units[@]}"; do
+    base="$(basename "$u")"
+    say "  ${c_dim}sudo systemctl disable --now $base${c_rst}"
+    say "  ${c_dim}sudo rm $u${c_rst}"
+  done
+fi
+
+# --- 4. Skills ---------------------------------------------------------------
+if (( ${#present_skills[@]} )) && [ "$KEEP_SKILLS" != 1 ]; then
+  step "Removing skills from ~/.claude/skills/"
+  for s in "${present_skills[@]}"; do
+    dest="$HOME/.claude/skills/$s"
+    if [ -L "$dest" ]; then rm -f "$dest" && ok "unlinked $s"
+    else rm -rf "$dest" && ok "removed $s"; fi
+  done
+fi
+
+# --- 5. Note what survives ---------------------------------------------------
+mem_dir="$HOME/.claude/projects/$(printf '%s' "$HOME" | sed 's#/#-#g')/memory"
+step "Preserved (not touched)"
+[ -d "$mem_dir" ] && say "  • Claude memory : $mem_dir"
+say "  • Backups       : ${BACKUP_DIR:-${OGMA_BACKUP_DIR:-$HOME/ogma-backups}}"
+
+# --- 6. Self-destruct --------------------------------------------------------
+step "Removing the Ogma directory"
+say "${c_dim}Goodbye. (exec rm -rf $OGMA_DIR)${c_rst}"
+cd /                      # leave the dir we're about to delete
+exec rm -rf -- "$OGMA_DIR"

@@ -17,7 +17,7 @@ TICKETS="$BASE/tickets"
 LOCAL="$BASE/bin/ogmactl.local"
 
 usage() {
-  echo "ogmactl: allowed commands — status | logs [source] [N] | restart | health | remember [--type T] <text> | set-persona <field> [value] | ticket <text> | tickets"
+  echo "ogmactl: allowed commands — status | logs [source] [N] | restart | health | backup | remember [--type T] <text> | set-persona <field> [value] | ticket <text> | tickets"
   echo "          log sources: gateway (default), dream, briefing"
   echo "          remember types: user | feedback | project (default) | reference"
   echo "          set-persona fields: name | style | language | show | clear"
@@ -79,6 +79,14 @@ case "$cmd" in
     fi
     echo "memory  : $(free -h | awk 'NR==2{print $3" used / "$2}')"
     echo "disk /  : $(df -h / | awk 'NR==2{print $3" used / "$2" ("$5")"}')"
+    ;;
+  backup)
+    # Let the bot (or operator) trigger an on-demand host-local backup. Delegates to
+    # bin/backup, which archives the git-ignored host files to ~/ogma-backups (outside
+    # the repo). Uninstall is deliberately NOT exposed here — backups only.
+    bk="$BASE/bin/backup"
+    [ -x "$bk" ] || { echo "backup helper missing ($bk)"; exit 1; }
+    exec "$bk"
     ;;
   remember)
     # Let the bot persist a memory immediately (and confirm in its reply). Writing via plain
