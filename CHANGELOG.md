@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.1] — 2026-06-19
+
+### Fixed
+- **`/backup` slash command now appears in the bot.** v1.2.0 shipped `bin/backup` and the whitelisted
+  `ogmactl backup`, but the gateway never registered a `/backup` command, so it was missing from the
+  Telegram menu and `/help`. Added it to the deterministic command table (dispatches straight to
+  `ogmactl backup` — no LLM call — and relays the archive path), the `setMyCommands` menu, and `/help`.
+  (Telegram caches the menu client-side; reopen the chat to refetch.)
+
 ## [1.2.0] — 2026-06-19
 
 ### Added
