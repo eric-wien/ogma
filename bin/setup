@@ -152,6 +152,12 @@ else
 fi
 want() { [ -n "${WANT[$1]:-}" ]; }
 
+# Did we touch anything the *running* gateway only reads at startup? If so, we'll
+# offer to restart it at the end so the change actually takes effect. (skills/auth
+# don't need a gateway restart; systemd's daemon-reload doesn't either.)
+NEED_RESTART=0
+for s in env persona model overlays; do want "$s" && NEED_RESTART=1; done
+
 # --- .env (token / your name / weather) -------------------------------------
 if want env; then
   step "Configuring .env"
@@ -477,7 +483,19 @@ printf '  claude CLI    : %s\n' "$([ -x "$CLAUDE_BIN" ] && echo "$CLAUDE_BIN" ||
 [ -x "$CLAUDE_BIN" ] || warn "claude CLI not found — set CLAUDE_BIN in .env, or install Claude Code."
 
 if [ "$HAVE_SYSTEMD" = 1 ] && [ -n "$tok" ] && [ -n "$allowed" ]; then
-  if yes "Start the gateway now (systemctl --user enable --now ogma-gateway)?" "y"; then
+  if systemctl --user is-active --quiet ogma-gateway 2>/dev/null; then
+    # Already running. The gateway reads .env/persona/overlays at startup, so changes
+    # to those only take effect on a restart — offer one if we touched them.
+    if [ "$NEED_RESTART" = 1 ]; then
+      if yes "Restart the gateway now to apply your changes?" "y"; then
+        systemctl --user restart ogma-gateway && ok "Gateway restarted. Logs: journalctl --user -u ogma-gateway -f" || err "Restart failed — check: systemctl --user status ogma-gateway"
+      else
+        say "${c_dim}Your changes apply on the next restart: ogmactl restart${c_rst}"
+      fi
+    else
+      ok "Gateway is running (nothing changed that needs a restart)."
+    fi
+  elif yes "Start the gateway now (systemctl --user enable --now ogma-gateway)?" "y"; then
     systemctl --user enable --now ogma-gateway && ok "Gateway started. Logs: journalctl --user -u ogma-gateway -f" || err "Failed to start — check: systemctl --user status ogma-gateway"
   fi
 else

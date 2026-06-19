@@ -71,7 +71,9 @@ model/effort/fallback, the `claude` CLI, the service, and installed skills.
 `overlays`, `skills`, `systemd`, `auth` — so a small tweak doesn't walk the whole flow. Pick from
 the menu, or go non-interactive: `bin/setup --reconfigure systemd,skills` (or `--all` for the classic
 full run). This is the easiest way to **install a newly-added systemd unit after a `git pull`**:
-`bin/setup --reconfigure systemd`.
+`bin/setup --reconfigure systemd`. A re-run leaves a running gateway untouched, except that if you
+changed something it reads at startup (`.env`/persona/model/overlays) it offers to **restart the
+gateway so the change takes effect** (decline to apply it later with `ogmactl restart`).
 
 **Updating after a `git pull`.** New/changed *bot commands* need no setup — the gateway re-registers
 its slash-command menu with Telegram on every startup, so `ogmactl restart` (or

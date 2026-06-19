@@ -44,7 +44,11 @@ All notable changes to this project are documented here. The format is based on
   others. Makes installing a newly-added systemd unit after a `git pull` a one-liner
   (`bin/setup --reconfigure systemd`); the executable-permissions step always runs so pulled-in
   scripts become runnable. (New/changed *bot commands* need no setup at all — the gateway
-  re-registers its Telegram menu on every startup; just restart it.)
+  re-registers its Telegram menu on every startup; just restart it.) When the gateway is already
+  running and you changed something it only reads at startup (`.env`/persona/model/overlays),
+  `bin/setup` now offers to **restart it so the change takes effect** (it otherwise leaves a running
+  gateway untouched — installing units only does `daemon-reload`, and the start prompt is a no-op on
+  a running service).
 - **Uninstall path (`bin/uninstall`).** Backs up host-local files first (unless `--no-backup`), stops
   and removes the systemd `--user` units and the copied skills, then **deletes the Ogma directory
   itself** — the script `exec`s `rm`, so the repo can erase the very script that's running (no npx
