@@ -36,6 +36,15 @@ All notable changes to this project are documented here. The format is based on
   prompts unless `-y`. Intended for recovery and for standing a fresh clone up on a new box (restore,
   then `bin/setup` to re-render host overlays + reinstall units). CLI-only — not exposed to the bot,
   since it overwrites `.env`.
+- **Selective `bin/setup` re-runs.** First run still does the full interview, but re-running on an
+  existing install now lets you pick which sections to revisit — `env`, `persona`, `model`,
+  `overlays`, `skills`, `systemd`, `auth` — via a menu, or non-interactively with
+  `bin/setup --reconfigure systemd,skills` (`--all` keeps the classic full run). Sections read what
+  they need from `.env`, so revisiting one (e.g. regenerating overlays) doesn't require re-entering
+  others. Makes installing a newly-added systemd unit after a `git pull` a one-liner
+  (`bin/setup --reconfigure systemd`); the executable-permissions step always runs so pulled-in
+  scripts become runnable. (New/changed *bot commands* need no setup at all — the gateway
+  re-registers its Telegram menu on every startup; just restart it.)
 - **Uninstall path (`bin/uninstall`).** Backs up host-local files first (unless `--no-backup`), stops
   and removes the systemd `--user` units and the copied skills, then **deletes the Ogma directory
   itself** — the script `exec`s `rm`, so the repo can erase the very script that's running (no npx

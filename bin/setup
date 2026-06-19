@@ -73,10 +73,29 @@ print(("OK "+((d.get("result") or {}).get("username") or "?")) if d.get("ok") el
   return "$problems"
 }
 
-case "${1:-}" in
-  --check|check) do_check; exit $? ;;
-  -h|--help) echo "Usage: bin/setup [--check]"; exit 0 ;;
-esac
+RECONFIG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --check|check) do_check; exit $? ;;
+    --all)         RECONFIG="all"; shift ;;
+    --reconfigure|--only)
+      RECONFIG="${2:?--reconfigure needs a list, e.g. persona,systemd}"; shift 2 ;;
+    -h|--help)
+      cat <<EOF
+Usage: bin/setup [--check] [--all] [--reconfigure LIST]
+
+  (no args)            first run: full interview. Re-run on an existing install:
+                       pick which sections to revisit.
+  --check              non-interactive config/health check; changes nothing.
+  --all                reconfigure every section (the classic full interview).
+  --reconfigure LIST   reconfigure only these sections (comma/space separated).
+                       Sections: env persona model overlays skills systemd auth
+                       e.g. bin/setup --reconfigure systemd,skills
+EOF
+      exit 0 ;;
+    *) err "unknown argument: $1 (try --help)"; exit 2 ;;
+  esac
+done
 
 say "${c_bold}Ogma setup${c_rst}  ${c_dim}($OGMA_DIR)${c_rst}"
 say "This configures your own copy. Nothing is sent anywhere; secrets you enter stay on this box."
@@ -90,27 +109,66 @@ CLAUDE_BIN="$(command -v claude || true)"; [ -n "$CLAUDE_BIN" ] || CLAUDE_BIN="$
 if [ -x "$CLAUDE_BIN" ]; then ok "claude CLI: $CLAUDE_BIN"; else warn "claude CLI not found at $CLAUDE_BIN — set CLAUDE_BIN in .env, or install Claude Code."; fi
 HAVE_SYSTEMD=0; if command -v systemctl >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then HAVE_SYSTEMD=1; ok "systemd --user available"; else warn "systemd --user not available — you'll run the gateway manually."; fi
 
-# --- .env --------------------------------------------------------------------
-step "Configuring .env"
+# --- Decide what to (re)configure -------------------------------------------
+# First run (no .env) does the full interview. Re-running on an existing install
+# lets you pick just the sections you want, so a routine `git pull` + small tweak
+# (or installing a newly-added systemd unit) doesn't walk the whole flow again.
+SECTIONS="env persona model overlays skills systemd auth"
+declare -A WANT
 if [ -f "$ENV" ]; then
-  warn ".env already exists."
-  yes "Update it in place (keeps existing values you don't change)?" "y" || { say "Leaving .env as-is."; }
+  chmod 600 "$ENV" 2>/dev/null || true
+  if [ -n "$RECONFIG" ]; then
+    sel="$RECONFIG"
+  else
+    step "What do you want to (re)configure?"
+    say ".env already exists — pick the sections to revisit (the rest stay as-is)."
+    say "    1) env       Telegram token / your name / weather location"
+    say "    2) persona   assistant name / style / language"
+    say "    3) model     model / reasoning effort / fallback"
+    say "    4) overlays  regenerate host notes + Claude settings overlay"
+    say "    5) skills    (re)install skills into ~/.claude/skills"
+    say "    6) systemd   (re)install systemd --user units (e.g. after a git pull adds one)"
+    say "    7) auth      authorize a Telegram chat"
+    say "${c_dim}  Enter numbers or names (comma/space separated), or 'all'. Blank = all.${c_rst}"
+    sel="$(ask "Sections" "all")"
+  fi
+  # Normalize: lowercase, commas -> spaces, then map tokens to section flags.
+  for tok in $(printf '%s' "$sel" | tr 'A-Z,' 'a-z '); do
+    case "$tok" in
+      all)        for s in $SECTIONS; do WANT[$s]=1; done ;;
+      1|env)      WANT[env]=1 ;;
+      2|persona)  WANT[persona]=1 ;;
+      3|model)    WANT[model]=1 ;;
+      4|overlays) WANT[overlays]=1 ;;
+      5|skills)   WANT[skills]=1 ;;
+      6|systemd)  WANT[systemd]=1 ;;
+      7|auth)     WANT[auth]=1 ;;
+      *) warn "ignoring unknown section '$tok'" ;;
+    esac
+  done
 else
   cp "$EXAMPLE" "$ENV"; chmod 600 "$ENV"; ok "Created .env from template (chmod 600)."
+  for s in $SECTIONS; do WANT[$s]=1; done   # first run: do everything
 fi
-chmod 600 "$ENV" 2>/dev/null || true
+want() { [ -n "${WANT[$1]:-}" ]; }
 
-say "${c_dim}Create YOUR OWN bot: message @BotFather in Telegram → /newbot → copy the token.${c_rst}"
-say "${c_dim}(Ogma is self-hosted — this is your private bot, not a shared one.)${c_rst}"
-token="$(ask "Your Telegram bot token (blank to skip for now)")"
-if [ -n "$token" ]; then set_env TELEGRAM_BOT_TOKEN "$token"; ok "Token saved."; else warn "No token yet — add TELEGRAM_BOT_TOKEN to .env before first run."; fi
+# --- .env (token / your name / weather) -------------------------------------
+if want env; then
+  step "Configuring .env"
+  say "${c_dim}Create YOUR OWN bot: message @BotFather in Telegram → /newbot → copy the token.${c_rst}"
+  say "${c_dim}(Ogma is self-hosted — this is your private bot, not a shared one.)${c_rst}"
+  token="$(ask "Your Telegram bot token (blank to keep current / skip)")"
+  if [ -n "$token" ]; then set_env TELEGRAM_BOT_TOKEN "$token"; ok "Token saved."; else warn "No token entered — leaving TELEGRAM_BOT_TOKEN as-is."; fi
 
-owner="$(ask "Your name (how Ogma addresses you)" "you")"
-set_env OGMA_OWNER_NAME "$owner"; ok "Owner name set to: $owner"
-loc="$(ask "Weather location for the briefing, e.g. Vienna (blank = auto by IP)")"
-[ -n "$loc" ] && { set_env OGMA_WEATHER_LOC "$loc"; ok "Weather location: $loc"; }
+  owner="$(ask "Your name (how Ogma addresses you)" "$(grep -E '^OGMA_OWNER_NAME=' "$ENV" 2>/dev/null | cut -d= -f2-)")"
+  [ -n "$owner" ] || owner="you"
+  set_env OGMA_OWNER_NAME "$owner"; ok "Owner name set to: $owner"
+  loc="$(ask "Weather location for the briefing, e.g. Vienna (blank = auto by IP)")"
+  [ -n "$loc" ] && { set_env OGMA_WEATHER_LOC "$loc"; ok "Weather location: $loc"; }
+fi
 
 # --- Persona (optional: name, style, language) -------------------------------
+if want persona; then
 step "Persona (optional)"
 say "${c_dim}Blank keeps Ogma's defaults. Change any of these later with: bin/ogmactl set-persona <field> <value>${c_rst}"
 pname="$(ask "Assistant name (blank = Ogma)")"
@@ -119,8 +177,10 @@ pstyle="$(ask "Conversation style override, e.g. 'terse and dry' (blank = defaul
 set_env OGMA_PERSONA_STYLE "$pstyle"; [ -n "$pstyle" ] && ok "Style: $pstyle"
 plang="$(ask "Default language, e.g. German (blank = match whoever writes to you)")"
 set_env OGMA_PERSONA_LANG "$plang"; [ -n "$plang" ] && ok "Language: $plang"
+fi
 
 # --- Model & reasoning effort ------------------------------------------------
+if want model; then
 step "Model & reasoning effort"
 # Live model list needs an API key; Claude Code subscription auth can't list models,
 # so this is best-effort — otherwise use the curated aliases (or type any full id).
@@ -167,6 +227,7 @@ case "$(printf '%s' "$fb" | tr '[:upper:]' '[:lower:]')" in
   opus)        set_env OGMA_FALLBACK_MODEL "claude-opus-4-8";      ok "Fallback: claude-opus-4-8" ;;
   *)           set_env OGMA_FALLBACK_MODEL "$fb";                  ok "Fallback: $fb" ;;
 esac
+fi
 
 # --- Host-local overlays (gitignored; merged at runtime) ---------------------
 # We DON'T edit the tracked workspace/CLAUDE.md or settings.json in place — that
@@ -174,7 +235,10 @@ esac
 # gitignored overlay files that Claude Code merges at runtime: CLAUDE.local.md
 # (imported via `@CLAUDE.local.md` in the persona) and settings.local.json (layered
 # over settings.json). Same core+local split as ogmactl/ogmactl.local and .env.
+if want overlays; then
 step "Writing host-local overlays (gitignored)"
+# Read the owner from .env so this works even when the 'env' section wasn't selected.
+owner="$(grep -E '^OGMA_OWNER_NAME=' "$ENV" 2>/dev/null | cut -d= -f2-)"; [ -n "$owner" ] || owner="you"
 # Canonical auto-memory dir (same derivation the dream/briefing use: $HOME with / -> -).
 mem_dir="$HOME/.claude/projects/$(printf '%s' "$HOME" | sed 's#/#-#g')/memory"
 cat > "$OGMA_DIR/workspace/CLAUDE.local.md" <<EOF
@@ -225,13 +289,15 @@ cat > "$OGMA_DIR/workspace/.claude/settings.local.json" <<EOF
 }
 EOF
 ok "Wrote workspace/CLAUDE.local.md and workspace/.claude/settings.local.json (gitignored)."
+fi
 
-# --- Permissions -------------------------------------------------------------
+# --- Permissions (always — makes pulled-in scripts executable) ---------------
 step "Setting executable permissions"
 chmod +x "$OGMA_DIR"/bin/* "$OGMA_DIR"/hooks/*.py 2>/dev/null || true
 ok "bin/ and hooks/ are executable."
 
 # --- Skills ------------------------------------------------------------------
+if want skills; then
 step "Installing skills (tickets, session-search, daily-briefing)"
 if yes "Install skills into ~/.claude/skills/?" "y"; then
   mkdir -p "$HOME/.claude/skills"
@@ -243,9 +309,10 @@ if yes "Install skills into ~/.claude/skills/?" "y"; then
 else
   warn "Skipped. The 'tickets' skill is what drives the workflow — install it later from skills/."
 fi
+fi
 
 # --- systemd ------------------------------------------------------------------
-if [ "$HAVE_SYSTEMD" = 1 ]; then
+if want systemd && [ "$HAVE_SYSTEMD" = 1 ]; then
   step "Installing systemd --user services"
   if yes "Install the systemd units now?" "y"; then
     UD="$HOME/.config/systemd/user"; mkdir -p "$UD"
@@ -270,6 +337,7 @@ if [ "$HAVE_SYSTEMD" = 1 ]; then
 fi
 
 # --- First-run: discover & authorize chat ID --------------------------------
+if want auth; then
 step "Authorizing your chat"
 # Read straight from .env (NOT the prompt vars) so re-runs that kept an existing
 # token/allow-list behave correctly.
@@ -390,6 +458,7 @@ PY
       systemctl --user start ogma-gateway && ok "Resumed ogma-gateway." || warn "Couldn't resume ogma-gateway — start it manually."
     fi
   fi
+fi
 fi
 
 # --- Done --------------------------------------------------------------------

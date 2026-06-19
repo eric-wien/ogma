@@ -66,6 +66,18 @@ manual steps are documented here too, in case you prefer to do it by hand. To re
 install without changing anything, run `bin/setup --check` — it validates your token, allow-list,
 model/effort/fallback, the `claude` CLI, the service, and installed skills.
 
+**Re-running on an existing install.** First run does the full interview. When `.env` already exists,
+`bin/setup` instead lets you pick **which sections to revisit** — `env`, `persona`, `model`,
+`overlays`, `skills`, `systemd`, `auth` — so a small tweak doesn't walk the whole flow. Pick from
+the menu, or go non-interactive: `bin/setup --reconfigure systemd,skills` (or `--all` for the classic
+full run). This is the easiest way to **install a newly-added systemd unit after a `git pull`**:
+`bin/setup --reconfigure systemd`.
+
+**Updating after a `git pull`.** New/changed *bot commands* need no setup — the gateway re-registers
+its slash-command menu with Telegram on every startup, so `ogmactl restart` (or
+`systemctl --user restart ogma-gateway`) is enough. Re-run `bin/setup --reconfigure systemd` only when
+a pull adds a new systemd **unit** (units are copied into `~/.config/systemd/user` at setup time).
+
 ### Manual setup
 
 **1. Create your own Telegram bot**
