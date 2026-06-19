@@ -225,7 +225,7 @@ _SUBCMD_RE = re.compile(r"^[a-z0-9-]{1,40}$")     # an ogmactl subcommand token
 # shell) and ogmactl refuses anything off its own whitelist — no widening.
 CORE_OGMACTL_CMDS: dict[str, list[str]] = {
     "/status": ["status"], "/health": ["health"], "/logs": ["logs"],
-    "/restart": ["restart"], "/remember": ["remember"],
+    "/restart": ["restart"], "/backup": ["backup"], "/remember": ["remember"],
     "/ticket": ["ticket"], "/tickets": ["tickets"],
 }
 CORE_MENU_COMMANDS: list[tuple[str, str]] = [
@@ -240,6 +240,7 @@ CORE_MENU_COMMANDS: list[tuple[str, str]] = [
     ("search", "Search past conversations"),
     ("tickets", "List open tickets"),
     ("remember", "Save a memory"),
+    ("backup", "Back up host-local files"),
 ]
 CORE_HELP = (
     "Ogma here — just talk to me, or use a command:\n"
@@ -249,7 +250,7 @@ CORE_HELP = (
     "/model [name]   /effort [level]   /fallback [name]\n"
     "\n"
     "Ogma & host:\n"
-    "/status   /health   /logs [src] [N]   /restart\n"
+    "/status   /health   /logs [src] [N]   /restart   /backup\n"
     "/remember <text>   /ticket <text>   /tickets\n"
     "\n"
     "Assistant:\n"
