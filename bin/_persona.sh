@@ -24,6 +24,9 @@ persona_cfg() {
 # Pure bash/awk so bin/ogmactl keeps no new dependency. Value may contain spaces/slashes.
 persona_set_env() {
   local env="$1" key="$2" val="$3" tmp
+  # Persona values are single-line by design (persona_render emits one bullet each);
+  # a line break here would inject arbitrary .env lines, so collapse CR/LF.
+  val="${val//$'\r'/ }"; val="${val//$'\n'/ }"
   tmp="$(mktemp)" || return 1
   KEY="$key" VAL="$val" awk '
     BEGIN { key=ENVIRON["KEY"]; val=ENVIRON["VAL"]; done=0 }

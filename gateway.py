@@ -66,6 +66,9 @@ CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", "300"))
 SESSIONS_FILE = BASE / "sessions.json"
 ENV_FILE = BASE / ".env"
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+# What a model alias/id may look like (/model, /fallback). Anything outside this —
+# especially whitespace/newlines — is refused before it reaches .env or the CLI.
+MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
 # Max concurrent Claude runs. Default 1 — small boxes (e.g. a Pi) OOM if several run at once.
 MAX_CONCURRENT = max(1, int(cfg("MAX_CONCURRENT", "1") or "1"))
 
@@ -103,6 +106,9 @@ def set_env_var(key: str, value: str) -> None:
 
     Lets runtime changes (e.g. /model, /effort) survive a restart. Best-effort.
     """
+    # A line break in the value would inject arbitrary .env lines (e.g. CLAUDE_BIN=…),
+    # so collapse CR/LF unconditionally — callers validate, this is the backstop.
+    value = value.replace("\r", " ").replace("\n", " ").strip()
     try:
         lines = ENV_FILE.read_text().splitlines() if ENV_FILE.exists() else []
     except OSError:
@@ -366,6 +372,10 @@ def handle_model(chat_id: str, arg: str) -> None:
         set_env_var("OGMA_MODEL", "")
         send(chat_id, "✅ Model reset to the Claude Code default. Applies to your next message.")
         return
+    if not MODEL_NAME_RE.match(arg):
+        send(chat_id, "⚠️ That doesn't look like a model name — use an alias or id "
+                      "(letters, digits, . _ : - only, no spaces).")
+        return
     MODEL = arg
     set_env_var("OGMA_MODEL", arg)
     send(chat_id, f"✅ Model set to {arg}. Applies to your next message.")
@@ -405,6 +415,10 @@ def handle_fallback(chat_id: str, arg: str) -> None:
         FALLBACK_MODEL = ""
         set_env_var("OGMA_FALLBACK_MODEL", "")
         send(chat_id, "✅ Fallback model cleared.")
+        return
+    if not MODEL_NAME_RE.match(arg):
+        send(chat_id, "⚠️ That doesn't look like a model name — use an alias or id "
+                      "(letters, digits, . _ : - only, no spaces).")
         return
     FALLBACK_MODEL = arg
     set_env_var("OGMA_FALLBACK_MODEL", arg)

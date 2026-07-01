@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.2] — 2026-07-01
+
+### Security
+- **Fixed a `.env` line-injection in `/model`, `/fallback`, and `set-persona` values.** Telegram
+  messages can contain newlines, and these values were written into `.env` verbatim — so an
+  allow-listed chat could inject arbitrary env lines (e.g. `CLAUDE_BIN=…`, executed as the gateway
+  user on the next restart). `/model` and `/fallback` now validate the name against a strict
+  pattern (letters, digits, `. _ : -`, max 64 chars) before accepting it, `set_env_var()`
+  unconditionally collapses CR/LF as a backstop, and `persona_set_env()` (used by
+  `ogmactl set-persona` and `bin/setup`) collapses CR/LF in persona values. Update recommended
+  for all installs; the risk is bounded by your `TELEGRAM_ALLOWED_USERS` allow-list, but the
+  allow-list is meant to be a cost/access control, not a shell grant.
+
 ## [1.2.1] — 2026-06-19
 
 ### Fixed
