@@ -4,10 +4,36 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — feature/optional-llm
+## [2.0.0] — unreleased (feature/optional-llm)
 
-Phases 1–3 of the repositioning roadmap (docs/roadmap.md): Ogma's core is the
-secure remote command runner; Claude Code becomes an optional assistant layer.
+**The repositioning release** (all four phases of docs/roadmap.md): Ogma's core
+is now the secure remote command runner — chat-driven execution of commands
+*you* predefine — and Claude Code becomes an optional assistant layer
+(`OGMA_LLM`). Major version because behavior changes incompatibly below, and
+because the project's core definition shifted.
+
+### ⚠️ Breaking changes
+- **`/restart` requires `/confirm`.** Protected commands (core `/restart`, plus
+  any local command marked `"confirm": true`) arm instead of firing and run
+  only after `/confirm` within the window (default 180s, `OGMA_CONFIRM_TTL`).
+- **Group chats authorize the sender, not the chat.** An allow-listed group no
+  longer grants every member access — each sender's user ID must be in
+  `TELEGRAM_ALLOWED_USERS` (or `TELEGRAM_GUEST_USERS`). Private chats are
+  unaffected.
+- **Long command output (>~8k chars) is delivered as a document**, not as a
+  series of 4000-char text messages.
+- **`bin/setup --reconfigure` numeric section IDs shifted** (the new `llm`
+  section is 2; persona/model/… moved down one). Section *names* are unchanged
+  — prefer those in scripts.
+- **A missing `claude` CLI no longer aborts startup** — the gateway runs in
+  command-only mode instead. If you relied on the hard failure to catch a
+  broken install, check `bin/setup --check` or the startup log line.
+- **Internals reorganized** for anyone carrying patches: everything
+  Claude-specific moved from `gateway.py` to `llm_claude.py`, everything
+  Telegram-specific to `transport_telegram.py`.
+
+No `.env` migration is needed: defaults preserve existing behavior
+(`OGMA_LLM` defaults to `claude` when the CLI exists).
 
 ### Added (Phase 2 — hardened command runner)
 - **/confirm for protected commands.** `"confirm": true` on a local command (and
