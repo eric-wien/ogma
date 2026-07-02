@@ -42,18 +42,23 @@ PY
 
 # Non-interactive health/config check — `bin/setup --check`. Changes nothing.
 do_check() {
-  local tok allowed cb u problems=0
+  local tok allowed llm cb u problems=0
   step "Ogma config check  ${c_dim}($OGMA_DIR)${c_rst}"
   tok="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV" 2>/dev/null | cut -d= -f2-)"
   allowed="$(grep -E '^TELEGRAM_ALLOWED_USERS=' "$ENV" 2>/dev/null | cut -d= -f2-)"
+  llm="$(grep -E '^OGMA_LLM=' "$ENV" 2>/dev/null | cut -d= -f2-)"
   cb="$(command -v claude || echo "$HOME/.local/bin/claude")"
   [ -f "$ENV" ] && ok ".env present" || { err ".env missing — run bin/setup"; problems=1; }
   [ -n "$tok" ] && ok "token set" || { err "token MISSING"; problems=1; }
   [ -n "$allowed" ] && ok "allowed chats: $allowed" || { err "allowed chats MISSING"; problems=1; }
-  printf '  model     : %s\n' "$(grep -E '^OGMA_MODEL=' "$ENV" 2>/dev/null | cut -d= -f2- | sed 's/^$/(Claude Code default)/')"
-  printf '  effort    : %s\n' "$(grep -E '^OGMA_EFFORT=' "$ENV" 2>/dev/null | cut -d= -f2- | sed 's/^$/(default)/')"
-  printf '  fallback  : %s\n' "$(grep -E '^OGMA_FALLBACK_MODEL=' "$ENV" 2>/dev/null | cut -d= -f2- | sed 's/^$/(none)/')"
-  [ -x "$cb" ] && ok "claude CLI: $cb" || { err "claude CLI missing ($cb)"; problems=1; }
+  if [ "$llm" = "off" ]; then
+    ok "LLM layer: off (command-only mode — no claude CLI needed)"
+  else
+    printf '  model     : %s\n' "$(grep -E '^OGMA_MODEL=' "$ENV" 2>/dev/null | cut -d= -f2- | sed 's/^$/(Claude Code default)/')"
+    printf '  effort    : %s\n' "$(grep -E '^OGMA_EFFORT=' "$ENV" 2>/dev/null | cut -d= -f2- | sed 's/^$/(default)/')"
+    printf '  fallback  : %s\n' "$(grep -E '^OGMA_FALLBACK_MODEL=' "$ENV" 2>/dev/null | cut -d= -f2- | sed 's/^$/(none)/')"
+    [ -x "$cb" ] && ok "claude CLI: $cb" || warn "claude CLI missing ($cb) — gateway will run command-only until it's installed"
+  fi
   if [ -n "$tok" ] && command -v curl >/dev/null; then
     # Token goes to curl via --config on a private fd, not argv (world-readable in /proc).
     u="$(curl -sS -m 12 --config <(printf 'url = "https://api.telegram.org/bot%s/getMe"\n' "$tok") 2>/dev/null | "$PY" -c 'import sys,json
@@ -66,9 +71,11 @@ print(("OK "+((d.get("result") or {}).get("username") or "?")) if d.get("ok") el
     printf '  service   : %s\n' "$(systemctl --user is-active ogma-gateway 2>/dev/null || echo inactive)"
     printf '  backup    : %s\n' "$(systemctl --user is-active ogma-backup.timer 2>/dev/null || echo inactive)"
   fi
-  for s in tickets session-search daily-briefing; do
-    [ -e "$HOME/.claude/skills/$s" ] && ok "skill: $s" || warn "skill not installed: $s"
-  done
+  if [ "$llm" != "off" ]; then
+    for s in tickets session-search daily-briefing; do
+      [ -e "$HOME/.claude/skills/$s" ] && ok "skill: $s" || warn "skill not installed: $s"
+    done
+  fi
   say ""
   [ "$problems" = 0 ] && say "${c_grn}All good.${c_rst}" || say "${c_yel}Issues found — see above.${c_rst}"
   return "$problems"
@@ -90,7 +97,7 @@ Usage: bin/setup [--check] [--all] [--reconfigure LIST]
   --check              non-interactive config/health check; changes nothing.
   --all                reconfigure every section (the classic full interview).
   --reconfigure LIST   reconfigure only these sections (comma/space separated).
-                       Sections: env persona model overlays skills systemd auth
+                       Sections: env llm persona model overlays skills systemd auth
                        e.g. bin/setup --reconfigure systemd,skills
 EOF
       exit 0 ;;
@@ -107,14 +114,14 @@ command -v "$PY" >/dev/null || { err "python3 not found — install it first."; 
 ok "python3: $($PY --version 2>&1)"
 command -v curl >/dev/null && ok "curl present" || warn "curl not found — Telegram delivery (tg-send/briefing) needs it."
 CLAUDE_BIN="$(command -v claude || true)"; [ -n "$CLAUDE_BIN" ] || CLAUDE_BIN="$HOME/.local/bin/claude"
-if [ -x "$CLAUDE_BIN" ]; then ok "claude CLI: $CLAUDE_BIN"; else warn "claude CLI not found at $CLAUDE_BIN — set CLAUDE_BIN in .env, or install Claude Code."; fi
+if [ -x "$CLAUDE_BIN" ]; then ok "claude CLI: $CLAUDE_BIN"; else warn "claude CLI not found at $CLAUDE_BIN — that's fine for command-only mode; install Claude Code (or set CLAUDE_BIN in .env) to enable the assistant layer."; fi
 HAVE_SYSTEMD=0; if command -v systemctl >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then HAVE_SYSTEMD=1; ok "systemd --user available"; else warn "systemd --user not available — you'll run the gateway manually."; fi
 
 # --- Decide what to (re)configure -------------------------------------------
 # First run (no .env) does the full interview. Re-running on an existing install
 # lets you pick just the sections you want, so a routine `git pull` + small tweak
 # (or installing a newly-added systemd unit) doesn't walk the whole flow again.
-SECTIONS="env persona model overlays skills systemd auth"
+SECTIONS="env llm persona model overlays skills systemd auth"
 declare -A WANT
 if [ -f "$ENV" ]; then
   chmod 600 "$ENV" 2>/dev/null || true
@@ -124,12 +131,13 @@ if [ -f "$ENV" ]; then
     step "What do you want to (re)configure?"
     say ".env already exists — pick the sections to revisit (the rest stay as-is)."
     say "    1) env       Telegram token / your name / weather location"
-    say "    2) persona   assistant name / style / language"
-    say "    3) model     model / reasoning effort / fallback"
-    say "    4) overlays  regenerate host notes + Claude settings overlay"
-    say "    5) skills    (re)install skills into ~/.claude/skills"
-    say "    6) systemd   (re)install systemd --user units (e.g. after a git pull adds one)"
-    say "    7) auth      authorize a Telegram chat"
+    say "    2) llm       assistant layer on/off (Claude Code vs. command-only)"
+    say "    3) persona   assistant name / style / language"
+    say "    4) model     model / reasoning effort / fallback"
+    say "    5) overlays  regenerate host notes + Claude settings overlay"
+    say "    6) skills    (re)install skills into ~/.claude/skills"
+    say "    7) systemd   (re)install systemd --user units (e.g. after a git pull adds one)"
+    say "    8) auth      authorize a Telegram chat"
     say "${c_dim}  Enter numbers or names (comma/space separated), or 'all'. Blank = all.${c_rst}"
     sel="$(ask "Sections" "all")"
   fi
@@ -138,12 +146,13 @@ if [ -f "$ENV" ]; then
     case "$tok" in
       all)        for s in $SECTIONS; do WANT[$s]=1; done ;;
       1|env)      WANT[env]=1 ;;
-      2|persona)  WANT[persona]=1 ;;
-      3|model)    WANT[model]=1 ;;
-      4|overlays) WANT[overlays]=1 ;;
-      5|skills)   WANT[skills]=1 ;;
-      6|systemd)  WANT[systemd]=1 ;;
-      7|auth)     WANT[auth]=1 ;;
+      2|llm)      WANT[llm]=1 ;;
+      3|persona)  WANT[persona]=1 ;;
+      4|model)    WANT[model]=1 ;;
+      5|overlays) WANT[overlays]=1 ;;
+      6|skills)   WANT[skills]=1 ;;
+      7|systemd)  WANT[systemd]=1 ;;
+      8|auth)     WANT[auth]=1 ;;
       *) warn "ignoring unknown section '$tok'" ;;
     esac
   done
@@ -157,7 +166,7 @@ want() { [ -n "${WANT[$1]:-}" ]; }
 # offer to restart it at the end so the change actually takes effect. (skills/auth
 # don't need a gateway restart; systemd's daemon-reload doesn't either.)
 NEED_RESTART=0
-for s in env persona model overlays; do want "$s" && NEED_RESTART=1; done
+for s in env llm persona model overlays; do want "$s" && NEED_RESTART=1; done
 
 # --- .env (token / your name / weather) -------------------------------------
 if want env; then
@@ -172,6 +181,27 @@ if want env; then
   set_env OGMA_OWNER_NAME "$owner"; ok "Owner name set to: $owner"
   loc="$(ask "Weather location for the briefing, e.g. Vienna (blank = auto by IP)")"
   [ -n "$loc" ] && { set_env OGMA_WEATHER_LOC "$loc"; ok "Weather location: $loc"; }
+fi
+
+# --- Assistant layer: Claude Code or command-only ----------------------------
+# The command runner (whitelisted ogmactl commands over Telegram) always works.
+# The assistant layer (free-text chat via Claude Code) is optional — without it
+# the persona/model/overlays/skills sections have nothing to configure, so
+# turning it off also drops them from THIS run.
+if want llm; then
+step "Assistant layer (optional)"
+say "Ogma always runs your predefined commands. The assistant layer adds free-text"
+say "chat handled by Claude Code (needs the claude CLI + your Claude auth on this box)."
+cur_llm="$(grep -E '^OGMA_LLM=' "$ENV" 2>/dev/null | cut -d= -f2-)"
+def_llm="y"; { [ "$cur_llm" = "off" ] || [ ! -x "$CLAUDE_BIN" ]; } && def_llm="n"
+if yes "Enable the Claude Code assistant layer?" "$def_llm"; then
+  set_env OGMA_LLM "claude"; ok "Assistant layer enabled (OGMA_LLM=claude)."
+  [ -x "$CLAUDE_BIN" ] || warn "claude CLI still missing — the gateway will run command-only until it's installed."
+else
+  set_env OGMA_LLM "off"; ok "Command-only mode (OGMA_LLM=off) — no LLM, no Claude dependency."
+  for s in persona model overlays skills; do unset "WANT[$s]"; done
+  say "${c_dim}Skipping persona/model/overlays/skills — they only apply to the assistant layer.${c_rst}"
+fi
 fi
 
 # --- Persona (optional: name, style, language) -------------------------------
@@ -490,15 +520,22 @@ step "Done"
 tok="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV" | cut -d= -f2-)"
 allowed="$(grep -E '^TELEGRAM_ALLOWED_USERS=' "$ENV" | cut -d= -f2-)"
 
+llm_mode="$(grep -E '^OGMA_LLM=' "$ENV" | cut -d= -f2-)"
 say "${c_bold}Config summary${c_rst}"
 printf '  token         : %s\n' "$([ -n "$tok" ] && echo set || echo MISSING)"
 printf '  allowed chats : %s\n' "${allowed:-MISSING}"
-printf '  model         : %s\n' "$(grep -E '^OGMA_MODEL=' "$ENV" | cut -d= -f2- | sed 's/^$/(Claude Code default)/')"
-printf '  effort        : %s\n' "$(grep -E '^OGMA_EFFORT=' "$ENV" | cut -d= -f2- | sed 's/^$/(default)/')"
-printf '  fallback      : %s\n' "$(grep -E '^OGMA_FALLBACK_MODEL=' "$ENV" | cut -d= -f2- | sed 's/^$/(none)/')"
-printf '  claude CLI    : %s\n' "$([ -x "$CLAUDE_BIN" ] && echo "$CLAUDE_BIN" || echo MISSING)"
+if [ "$llm_mode" = "off" ]; then
+  printf '  llm           : off (command-only mode)\n'
+else
+  printf '  model         : %s\n' "$(grep -E '^OGMA_MODEL=' "$ENV" | cut -d= -f2- | sed 's/^$/(Claude Code default)/')"
+  printf '  effort        : %s\n' "$(grep -E '^OGMA_EFFORT=' "$ENV" | cut -d= -f2- | sed 's/^$/(default)/')"
+  printf '  fallback      : %s\n' "$(grep -E '^OGMA_FALLBACK_MODEL=' "$ENV" | cut -d= -f2- | sed 's/^$/(none)/')"
+  printf '  claude CLI    : %s\n' "$([ -x "$CLAUDE_BIN" ] && echo "$CLAUDE_BIN" || echo MISSING)"
+fi
 { [ -n "$tok" ] && [ -n "$allowed" ]; } || warn "Token and/or allowed chats missing — Ogma won't respond until both are set (re-run setup)."
-[ -x "$CLAUDE_BIN" ] || warn "claude CLI not found — set CLAUDE_BIN in .env, or install Claude Code."
+if [ "$llm_mode" != "off" ] && [ ! -x "$CLAUDE_BIN" ]; then
+  warn "claude CLI not found — the gateway runs command-only until you install Claude Code (or set CLAUDE_BIN)."
+fi
 
 if [ "$HAVE_SYSTEMD" = 1 ] && [ -n "$tok" ] && [ -n "$allowed" ]; then
   if systemctl --user is-active --quiet ogma-gateway 2>/dev/null; then

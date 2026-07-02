@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — feature/optional-llm
+
+Phase 1 of the repositioning roadmap (docs/roadmap.md): Ogma's core is the secure
+remote command runner; Claude Code becomes an optional assistant layer.
+
+### Added
+- **Command-only mode.** `OGMA_LLM=off` (or simply a missing `claude` binary) runs the
+  gateway as a pure command runner: whitelisted ogmactl commands only, free text gets a
+  refusal, LLM commands (`/new`, `/model`, `/effort`, `/fallback`, `/briefing`, `/dream`,
+  `/search`) are refused and dropped from the Telegram menu and `/help`. Python stdlib
+  is then the only dependency.
+- `bin/setup` gained an `llm` section: choose "assistant layer" vs. "commands only" on
+  first run (and via `--reconfigure llm`); command-only installs skip the
+  persona/model/overlays/skills sections. `--check` and the summary are mode-aware.
+- `docs/roadmap.md` — the 4-phase plan this comes from.
+
+### Changed
+- Everything Claude-specific moved out of `gateway.py` into the new `llm_claude.py`
+  (headless invocation, session persistence, model/effort/fallback handling). The
+  gateway imports it only when the LLM layer is on and talks to it through returned
+  reply strings — groundwork for the Phase 3 transport abstraction.
+- A missing `claude` binary no longer aborts gateway startup (was `sys.exit`); it logs
+  and falls back to command-only mode.
+
 ## [1.3.0] — 2026-07-02
 
 One release for the rest of the 2026-07-01 code-review findings.

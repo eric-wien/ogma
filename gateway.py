@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-Ogma gateway — a minimal Telegram <-> Claude Code bridge.
+Ogma gateway — a secure remote command runner over Telegram, with an optional
+Claude Code assistant layer.
 
 One always-on process. Long-polls Telegram (no inbound ports needed, works behind
-NAT/Tailscale), and for each message from an allow-listed chat it invokes the local
-`claude` CLI in headless mode, keeping one resumable Claude session per chat.
-
-Zero third-party dependencies: Python standard library + the `claude` binary only.
+NAT/Tailscale) and, for each message from an allow-listed chat, either runs a
+whitelisted ogmactl command (deterministic, no LLM) or — when the LLM layer is
+enabled (OGMA_LLM=claude, the default when the `claude` binary exists) — hands
+free text to a resumable headless Claude Code session (see llm_claude.py).
+Without the LLM layer this is a pure command runner: Python stdlib only.
 """
 from __future__ import annotations
 
@@ -67,28 +69,11 @@ ALLOWED = {
 CLAUDE_BIN = os.environ.get(
     "CLAUDE_BIN", str(Path.home() / ".local/bin/claude")
 )
-WORKDIR = cfg("WORKDIR", str(BASE / "workspace"))
-PERMISSION_MODE = cfg("PERMISSION_MODE")   # e.g. acceptEdits
-ALLOWED_TOOLS = cfg("ALLOWED_TOOLS")       # e.g. "Read WebSearch"
-MODEL = cfg("MODEL")
-FALLBACK_MODEL = cfg("FALLBACK_MODEL")   # auto-fallback when the primary is unavailable
-EFFORT = cfg("EFFORT").lower()           # low|medium|high|xhigh|max (empty = CLI default)
-CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", "300"))
-SESSIONS_FILE = BASE / "sessions.json"
-ENV_FILE = BASE / ".env"
-EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
-# What a model alias/id may look like (/model, /fallback). Anything outside this —
-# especially whitespace/newlines — is refused before it reaches .env or the CLI.
-MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
-# Max concurrent Claude runs. Default 1 — small boxes (e.g. a Pi) OOM if several run at once.
-MAX_CONCURRENT = max(1, int(cfg("MAX_CONCURRENT", "1") or "1"))
 
 _inflight: set = set()                       # chat_ids with a message currently being handled
 _inflight_lock = threading.Lock()
 DENY_COOLDOWN = 600                          # seconds between replies to a non-allowed chat
 _denied: dict[str, float] = {}               # chat_id -> when we last answered its denial
-_sessions_lock = threading.Lock()            # guards the shared sessions dict + file
-_run_sem = threading.Semaphore(MAX_CONCURRENT)  # bounds concurrent `claude` invocations
 
 API = f"https://api.telegram.org/bot{TOKEN}"
 TG_MAX = 4000  # Telegram hard limit is 4096; leave headroom
@@ -99,49 +84,24 @@ def log(*a: object) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Session persistence (chat_id -> claude session_id)
+# Optional LLM layer. OGMA_LLM=claude (default) enables it when the `claude`
+# binary exists; OGMA_LLM=off runs a pure command runner. LLM stays None in
+# command-only mode and every LLM feature checks it — llm_claude is only
+# imported (and its config only read) when the layer is actually on.
 # ---------------------------------------------------------------------------
-def load_sessions() -> dict[str, str]:
-    if SESSIONS_FILE.exists():
-        try:
-            return json.loads(SESSIONS_FILE.read_text())
-        except json.JSONDecodeError:
-            return {}
-    return {}
-
-
-def save_sessions(s: dict[str, str]) -> None:
-    # Atomic replace — a crash mid-write must not corrupt the file (a corrupt
-    # sessions.json silently drops every chat's session on the next start).
-    tmp = SESSIONS_FILE.with_name(SESSIONS_FILE.name + ".tmp")
-    tmp.write_text(json.dumps(s, indent=2))
-    tmp.replace(SESSIONS_FILE)
-
-
-def set_env_var(key: str, value: str) -> None:
-    """Persist KEY=value into .env (updating an existing/commented line or appending).
-
-    Lets runtime changes (e.g. /model, /effort) survive a restart. Best-effort.
-    """
-    # A line break in the value would inject arbitrary .env lines (e.g. CLAUDE_BIN=…),
-    # so collapse CR/LF unconditionally — callers validate, this is the backstop.
-    value = value.replace("\r", " ").replace("\n", " ").strip()
-    try:
-        lines = ENV_FILE.read_text().splitlines() if ENV_FILE.exists() else []
-    except OSError:
-        lines = []
-    pat = re.compile(rf"^#?\s*{re.escape(key)}=")
-    repl, found = f"{key}={value}", False
-    for i, ln in enumerate(lines):
-        if pat.match(ln):
-            lines[i], found = repl, True
-            break
-    if not found:
-        lines.append(repl)
-    try:
-        ENV_FILE.write_text("\n".join(lines) + "\n")
-    except OSError as e:  # noqa: BLE001
-        log("set_env_var failed:", e)
+LLM_MODE = (cfg("LLM", "claude").lower() or "claude")
+LLM = None
+if LLM_MODE in ("off", "none", "0", "false"):
+    log("LLM layer disabled (OGMA_LLM=off) — command-only mode")
+elif LLM_MODE == "claude":
+    if Path(CLAUDE_BIN).exists():
+        from llm_claude import ClaudeLLM
+        LLM = ClaudeLLM(BASE)
+    else:
+        log(f"claude binary not found at {CLAUDE_BIN} — running in command-only "
+            "mode (install Claude Code or set CLAUDE_BIN to enable the LLM layer)")
+else:
+    log(f"unknown OGMA_LLM={LLM_MODE!r} (use 'claude' or 'off') — command-only mode")
 
 
 # ---------------------------------------------------------------------------
@@ -200,58 +160,6 @@ def keep_typing(chat_id: str, stop: threading.Event) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Claude headless invocation
-# ---------------------------------------------------------------------------
-def ask_claude(prompt: str, session_id: str | None) -> tuple[str, str | None]:
-    """Run `claude -p`. Returns (reply_text, new_session_id)."""
-    cmd = [CLAUDE_BIN, "-p", prompt, "--output-format", "json", "--add-dir", WORKDIR]
-    if session_id:
-        cmd += ["--resume", session_id]
-    if PERMISSION_MODE:
-        cmd += ["--permission-mode", PERMISSION_MODE]
-    if ALLOWED_TOOLS:
-        cmd += ["--allowedTools", *ALLOWED_TOOLS.split()]
-    if MODEL:
-        cmd += ["--model", MODEL]
-    if FALLBACK_MODEL:
-        cmd += ["--fallback-model", FALLBACK_MODEL]
-    if EFFORT:
-        cmd += ["--effort", EFFORT]
-    try:
-        proc = subprocess.run(
-            cmd, cwd=WORKDIR, capture_output=True, text=True, timeout=CLAUDE_TIMEOUT
-        )
-    except subprocess.TimeoutExpired:
-        return ("⏱️ That took too long and timed out. Try a smaller ask?", session_id)
-    if proc.returncode != 0:
-        log("claude exited", proc.returncode, proc.stderr[:500])
-        # Retry fresh ONLY when the resume itself failed (the CLI says "No conversation
-        # found with session ID: …"). A blanket retry would silently drop the chat's
-        # context whenever a transient error cleared on the second attempt.
-        if session_id and "no conversation found" in (proc.stderr or "").lower():
-            log("stale session id — retrying with a fresh session")
-            return ask_claude(prompt, None)
-        # Surface the actual reason (e.g. unknown model / bad flag) instead of a bare code.
-        hint = next((ln.strip() for ln in (proc.stderr or "").splitlines() if ln.strip()), "")
-        msg = f"⚠️ Claude error (exit {proc.returncode})."
-        if hint:
-            msg = f"{msg} {hint[:200]}".rstrip()
-        if session_id:
-            msg += " (Your session is kept — if this persists, /new starts fresh.)"
-        return (msg, session_id)
-    try:
-        out = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return (proc.stdout.strip() or "⚠️ Empty response.", session_id)
-    if out.get("is_error"):
-        return (f"⚠️ {out.get('result', 'error')}", out.get("session_id", session_id))
-    return (out.get("result", "").strip() or "(no reply)", out.get("session_id", session_id))
-
-
-# ---------------------------------------------------------------------------
-# Message handling
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
 # Slash commands — generic CORE (this file, public) merged at runtime with a
 # host-LOCAL extension (config/commands.local.json, gitignored). Same core+local
 # split as ogmactl/ogmactl.local and .env/.env.example: ship/update the source
@@ -270,21 +178,37 @@ CORE_OGMACTL_CMDS: dict[str, list[str]] = {
     "/restart": ["restart"], "/backup": ["backup"], "/remember": ["remember"],
     "/ticket": ["ticket"], "/tickets": ["tickets"],
 }
-CORE_MENU_COMMANDS: list[tuple[str, str]] = [
-    ("new", "Start a fresh session"),
-    ("help", "Show commands"),
-    ("model", "Show or set the model"),
-    ("effort", "Show or set reasoning effort"),
-    ("status", "Ogma service status"),
-    ("health", "Host health snapshot"),
-    ("logs", "Recent gateway logs"),
-    ("briefing", "Generate my briefing now"),
-    ("search", "Search past conversations"),
-    ("tickets", "List open tickets"),
-    ("remember", "Save a memory"),
-    ("backup", "Back up host-local files"),
-]
-CORE_HELP = (
+# Commands that only exist with the LLM layer: sessions, model tuning, and the
+# scripts that are themselves claude invocations (briefing/dream/search).
+LLM_ONLY_CMDS = ("/new", "/model", "/effort", "/fallback", "/briefing", "/dream", "/search")
+NO_LLM_MSG = ("🔒 This Ogma runs in command-only mode — it executes its predefined "
+              "commands, there is no AI assistant behind it. /help lists what's available.")
+
+
+def _core_menu() -> list[tuple[str, str]]:
+    """The built-in / menu; LLM entries only when the layer is on."""
+    llm = LLM is not None
+    items: list[tuple[str, str]] = []
+    if llm:
+        items.append(("new", "Start a fresh session"))
+    items.append(("help", "Show commands"))
+    if llm:
+        items += [("model", "Show or set the model"),
+                  ("effort", "Show or set reasoning effort")]
+    items += [("status", "Ogma service status"),
+              ("health", "Host health snapshot"),
+              ("logs", "Recent gateway logs")]
+    if llm:
+        items += [("briefing", "Generate my briefing now"),
+                  ("search", "Search past conversations")]
+    items += [("tickets", "List open tickets"),
+              ("remember", "Save a memory"),
+              ("backup", "Back up host-local files")]
+    return items
+
+
+CORE_MENU_COMMANDS: list[tuple[str, str]] = _core_menu()
+_HELP_LLM = (
     "Ogma here — just talk to me, or use a command:\n"
     "\n"
     "Session:\n"
@@ -299,6 +223,14 @@ CORE_HELP = (
     "/briefing — make my briefing now\n"
     "/search <query> — search past chats"
 )
+_HELP_CMD_ONLY = (
+    "Ogma here — command-only mode (no AI layer). Available commands:\n"
+    "\n"
+    "Ogma & host:\n"
+    "/status   /health   /logs [src] [N]   /restart   /backup\n"
+    "/remember <text>   /ticket <text>   /tickets"
+)
+CORE_HELP = _HELP_LLM if LLM else _HELP_CMD_ONLY
 
 
 def load_local_commands() -> list[dict]:
@@ -367,7 +299,8 @@ def script_busy(script: str) -> bool:
     """True if bin/<script> currently holds its state/<script>.lock flock.
 
     briefing/dream run detached and each is a full claude invocation — without this
-    check a repeated /briefing would stack concurrent runs outside _run_sem's limit.
+    check a repeated /briefing would stack concurrent runs outside the LLM layer's
+    concurrency limit.
     """
     lock = BASE / "state" / f"{script}.lock"
     if not lock.exists():
@@ -414,77 +347,7 @@ def register_menu() -> None:
             log(f"setMyCommands error ({label}):", e)
 
 
-def handle_model(chat_id: str, arg: str) -> None:
-    global MODEL
-    if not arg:
-        send(chat_id,
-             f"Current model: {MODEL or '(Claude Code default)'}\n\n"
-             "Change with /model <name>:\n"
-             "• sonnet — fast, good default on a Pi (claude-sonnet-4-6)\n"
-             "• haiku — fastest / cheapest (claude-haiku-4-5)\n"
-             "• opus — most capable, slower (claude-opus-4-8)\n"
-             "• <full model id> — anything Claude Code accepts\n"
-             "• default — reset to the Claude Code default")
-        return
-    if arg.lower() in ("default", "reset", "none"):
-        MODEL = ""
-        set_env_var("OGMA_MODEL", "")
-        send(chat_id, "✅ Model reset to the Claude Code default. Applies to your next message.")
-        return
-    if not MODEL_NAME_RE.match(arg):
-        send(chat_id, "⚠️ That doesn't look like a model name — use an alias or id "
-                      "(letters, digits, . _ : - only, no spaces).")
-        return
-    MODEL = arg
-    set_env_var("OGMA_MODEL", arg)
-    send(chat_id, f"✅ Model set to {arg}. Applies to your next message.")
-
-
-def handle_effort(chat_id: str, arg: str) -> None:
-    global EFFORT
-    if not arg:
-        send(chat_id,
-             f"Current effort: {EFFORT or '(default)'}\n\n"
-             "Change with /effort <level>: low | medium | high | xhigh | max | default\n"
-             "Higher = more thorough but slower/pricier; lower = snappier.")
-        return
-    val = arg.lower()
-    if val in ("default", "reset", "none"):
-        EFFORT = ""
-        set_env_var("OGMA_EFFORT", "")
-        send(chat_id, "✅ Effort reset to default. Applies to your next message.")
-        return
-    if val not in EFFORT_LEVELS:
-        send(chat_id, f"⚠️ Unknown effort '{arg}'. Use: {', '.join(EFFORT_LEVELS)} — or default.")
-        return
-    EFFORT = val
-    set_env_var("OGMA_EFFORT", val)
-    send(chat_id, f"✅ Effort set to {val}. Applies to your next message.")
-
-
-def handle_fallback(chat_id: str, arg: str) -> None:
-    global FALLBACK_MODEL
-    if not arg:
-        send(chat_id,
-             f"Current fallback model: {FALLBACK_MODEL or '(none)'}\n\n"
-             "Set with /fallback <name> — used automatically if the main model is unavailable "
-             "(rate limit/outage). Accepts an alias or full id; /fallback none clears it.")
-        return
-    if arg.lower() in ("none", "off", "clear", "default"):
-        FALLBACK_MODEL = ""
-        set_env_var("OGMA_FALLBACK_MODEL", "")
-        send(chat_id, "✅ Fallback model cleared.")
-        return
-    if not MODEL_NAME_RE.match(arg):
-        send(chat_id, "⚠️ That doesn't look like a model name — use an alias or id "
-                      "(letters, digits, . _ : - only, no spaces).")
-        return
-    FALLBACK_MODEL = arg
-    set_env_var("OGMA_FALLBACK_MODEL", arg)
-    send(chat_id, f"✅ Fallback model set to {arg}.")
-
-
-def handle(chat_id: str, text: str, sessions: dict[str, str]) -> None:
+def handle(chat_id: str, text: str) -> None:
     stripped = text.strip()
     parts = stripped.split(maxsplit=1)
     cmd = parts[0].lower() if parts else ""
@@ -495,21 +358,16 @@ def handle(chat_id: str, text: str, sessions: dict[str, str]) -> None:
     if cmd in ("/start", "/help"):
         send(chat_id, build_help())
         return
-    if cmd == "/new":
-        with _sessions_lock:
-            sessions.pop(chat_id, None)
-            save_sessions(sessions)
-        send(chat_id, "🧹 Fresh session.")
+
+    # LLM-layer commands: answered by the layer when it's on, refused otherwise.
+    if cmd in LLM_ONLY_CMDS and LLM is None:
+        send(chat_id, NO_LLM_MSG)
         return
-    if cmd == "/model":
-        handle_model(chat_id, arg)
-        return
-    if cmd == "/effort":
-        handle_effort(chat_id, arg)
-        return
-    if cmd == "/fallback":
-        handle_fallback(chat_id, arg)
-        return
+    if LLM is not None:
+        reply = LLM.command(cmd, chat_id, arg)   # /new /model /effort /fallback
+        if reply is not None:
+            send(chat_id, reply)
+            return
 
     # Deterministic commands -> ogmactl (no LLM call; instant and free).
     if cmd in OGMACTL_CMDS:
@@ -544,6 +402,12 @@ def handle(chat_id: str, text: str, sessions: dict[str, str]) -> None:
         text = ("Use the session-search skill to search our past conversations, "
                 f"then tell me what you find about: {arg}")
 
+    # Free text. Command-only mode has nothing to hand it to — say so instead
+    # of silently ignoring the message.
+    if LLM is None:
+        send(chat_id, NO_LLM_MSG)
+        return
+
     # Show "typing…" immediately on receipt, synchronously, so it is guaranteed
     # to reach Telegram before the (blocking) Claude call starts — then the
     # keepalive thread refreshes it (~every 4s) for the rest of the turn.
@@ -552,17 +416,9 @@ def handle(chat_id: str, text: str, sessions: dict[str, str]) -> None:
     typer = threading.Thread(target=keep_typing, args=(chat_id, stop), daemon=True)
     typer.start()
     try:
-        with _sessions_lock:
-            prior = sessions.get(chat_id)
-        with _run_sem:  # bound concurrent claude runs (RAM safety on small boxes)
-            reply, sid = ask_claude(text, prior)
+        reply = LLM.run_turn(chat_id, text)
     finally:
         stop.set()
-    if sid:
-        with _sessions_lock:
-            if sid != sessions.get(chat_id):
-                sessions[chat_id] = sid
-                save_sessions(sessions)
     send(chat_id, reply)
 
 
@@ -578,10 +434,10 @@ def validate_token() -> tuple[bool, str]:
     return (False, r.get("description", "not ok"))
 
 
-def _worker(chat_id: str, text: str, sessions: dict[str, str]) -> None:
+def _worker(chat_id: str, text: str) -> None:
     """Handle one message in its own thread, then release the per-chat slot."""
     try:
-        handle(chat_id, text, sessions)
+        handle(chat_id, text)
     except Exception as e:  # noqa: BLE001
         log("handler error:", e)
         send(chat_id, "⚠️ Something broke handling that. Logged it.")
@@ -591,24 +447,16 @@ def _worker(chat_id: str, text: str, sessions: dict[str, str]) -> None:
 
 
 def main() -> None:
-    global EFFORT
     if not TOKEN:
         sys.exit("TELEGRAM_BOT_TOKEN is not set (see .env.example).")
-    if not Path(CLAUDE_BIN).exists():
-        sys.exit(f"claude binary not found at {CLAUDE_BIN}")
-    # Don't let a bad hand-edited effort value fail every message — ignore it.
-    if EFFORT and EFFORT not in EFFORT_LEVELS:
-        log(f"ignoring invalid OGMA_EFFORT={EFFORT!r} (use one of {', '.join(EFFORT_LEVELS)})")
-        EFFORT = ""
     ok_token, info = validate_token()
     if ok_token:
         log(f"token OK — bot @{info}")
         register_menu()
     else:
         log(f"⚠️ TOKEN CHECK FAILED ({info}). Fix TELEGRAM_BOT_TOKEN in .env and restart.")
-    sessions = load_sessions()
-    log(f"Ogma up. workdir={WORKDIR} allowed={ALLOWED or '(none — locked down)'} "
-        f"max_concurrent={MAX_CONCURRENT}")
+    mode = f"llm={LLM_MODE} workdir={LLM.workdir}" if LLM else "command-only"
+    log(f"Ogma up. {mode} allowed={ALLOWED or '(none — locked down)'}")
     offset = 0
     while True:
         try:
@@ -650,7 +498,7 @@ def main() -> None:
                 send(chat_id, "⏳ Still working on your previous message — give me a moment, "
                               "then resend if needed.")
                 continue
-            threading.Thread(target=_worker, args=(chat_id, text, sessions), daemon=True).start()
+            threading.Thread(target=_worker, args=(chat_id, text), daemon=True).start()
 
 
 if __name__ == "__main__":
