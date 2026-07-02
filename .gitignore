@@ -17,6 +17,7 @@ __pycache__/
 
 # host-specific ogmactl extension (operator-provided, never published)
 bin/ogmactl.local
+docs/commands.local.md
 
 # host-specific Telegram slash commands (the .example.json template IS tracked)
 config/commands.local.json
