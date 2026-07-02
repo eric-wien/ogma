@@ -6,8 +6,37 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased] — feature/optional-llm
 
-Phase 1 of the repositioning roadmap (docs/roadmap.md): Ogma's core is the secure
-remote command runner; Claude Code becomes an optional assistant layer.
+Phases 1–3 of the repositioning roadmap (docs/roadmap.md): Ogma's core is the
+secure remote command runner; Claude Code becomes an optional assistant layer.
+
+### Added (Phase 2 — hardened command runner)
+- **/confirm for protected commands.** `"confirm": true` on a local command (and
+  core `/restart`) arms the command instead of running it; it fires only on
+  /confirm within 60s, /cancel disarms. Typos can no longer restart the gateway.
+- **Per-argument validation.** `"validate": [regex, ...]` + `"min_args"` on a
+  local command are checked by the gateway before anything executes; a broken
+  pattern disables the command (fails closed).
+- **Append-only audit log** (`state/audit.log`, JSON lines): every executed
+  command with exit code + duration, LLM turns, denials, confirmations, guest
+  refusals. Readable over chat via `/logs audit`; capped by logtrim; included
+  in backups (state/ is host-local).
+- **Guest role.** `TELEGRAM_GUEST_USERS` chats get a read-only subset: core
+  `/status` + `/health` plus local commands marked `"guest": true` — no LLM, no
+  free text. Admin list (`TELEGRAM_ALLOWED_USERS`) is unchanged.
+- **Long output arrives as a file** instead of a flood of 4000-char chunks
+  (threshold ~8k chars), with a chunked-send fallback if the upload fails.
+- **Group hardening:** authorization now checks the message *sender* in group
+  chats, not just the chat id — allow-listing a group no longer hands the
+  command runner to every member.
+
+### Changed (Phase 3 — transport seam)
+- All Telegram specifics (long-poll loop, chunked sending + UTF-16 length rule,
+  typing indicator, menu registration, document upload) extracted from
+  gateway.py into the new `transport_telegram.py` behind a six-method surface
+  (`validate/register_menu/updates/send/send_document/typing`). A future Signal
+  backend (signal-cli) implements the same surface without touching the gateway.
+
+Phase 1 (previously listed below): Claude layer optional via OGMA_LLM.
 
 ### Added
 - **Command-only mode.** `OGMA_LLM=off` (or simply a missing `claude` binary) runs the

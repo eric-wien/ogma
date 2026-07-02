@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """
-Ogma gateway — a secure remote command runner over Telegram, with an optional
+Ogma gateway — a secure remote command runner over chat, with an optional
 Claude Code assistant layer.
 
-One always-on process. Long-polls Telegram (no inbound ports needed, works behind
-NAT/Tailscale) and, for each message from an allow-listed chat, either runs a
-whitelisted ogmactl command (deterministic, no LLM) or — when the LLM layer is
-enabled (OGMA_LLM=claude, the default when the `claude` binary exists) — hands
-free text to a resumable headless Claude Code session (see llm_claude.py).
-Without the LLM layer this is a pure command runner: Python stdlib only.
+One always-on process. Receives messages through a pluggable transport
+(transport_telegram.py today; the surface is small enough that a Signal backend
+is a drop-in later) and, for each message from an allow-listed sender, either
+runs a whitelisted ogmactl command (deterministic, no LLM) or — when the LLM
+layer is enabled (OGMA_LLM=claude, the default when the `claude` binary
+exists) — hands free text to a resumable headless Claude Code session (see
+llm_claude.py). Without the LLM layer this is a pure command runner: Python
+stdlib only.
+
+Hardening on the command path: per-command argument validation, /confirm for
+destructive commands, an admin/guest role split, and an append-only audit log
+(state/audit.log).
 """
 from __future__ import annotations
 
@@ -19,9 +25,9 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.parse
-import urllib.request
 from pathlib import Path
+
+from transport_telegram import TelegramTransport
 
 # ---------------------------------------------------------------------------
 # Config
@@ -60,27 +66,56 @@ def cfg(name: str, default: str = "") -> str:
     return os.environ.get(f"OGMA_{name}", default).strip()
 
 
+def _id_set(var: str) -> set[str]:
+    return {x.strip() for x in os.environ.get(var, "").split(",") if x.strip()}
+
+
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-ALLOWED = {
-    x.strip()
-    for x in os.environ.get("TELEGRAM_ALLOWED_USERS", "").split(",")
-    if x.strip()
-}
+ALLOWED = _id_set("TELEGRAM_ALLOWED_USERS")   # admins: everything
+GUESTS = _id_set("TELEGRAM_GUEST_USERS") - ALLOWED  # read-only command subset
 CLAUDE_BIN = os.environ.get(
     "CLAUDE_BIN", str(Path.home() / ".local/bin/claude")
 )
 
 _inflight: set = set()                       # chat_ids with a message currently being handled
 _inflight_lock = threading.Lock()
-DENY_COOLDOWN = 600                          # seconds between replies to a non-allowed chat
-_denied: dict[str, float] = {}               # chat_id -> when we last answered its denial
+DENY_COOLDOWN = 600                          # seconds between replies to a non-allowed sender
+_denied: dict[str, float] = {}               # sender -> when we last answered its denial
 
-API = f"https://api.telegram.org/bot{TOKEN}"
-TG_MAX = 4000  # Telegram hard limit is 4096; leave headroom
+CONFIRM_TTL = 60                             # seconds a /confirm-protected command stays armed
+_pending_confirm: dict[str, tuple[float, str, list[str]]] = {}  # chat -> (expiry, cmd, argv)
+_confirm_lock = threading.Lock()
+
+DOC_THRESHOLD = 8000  # command output longer than this is sent as a file, not chunks
 
 
 def log(*a: object) -> None:
     print(time.strftime("%Y-%m-%d %H:%M:%S"), *a, flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Audit log — append-only JSON lines in state/audit.log: who ran what, when,
+# with what result. The gateway log is for operating the bot; this file is for
+# answering "what did the bot actually execute" later. Best-effort by design:
+# auditing must never take the gateway down.
+# ---------------------------------------------------------------------------
+AUDIT_FILE = BASE / "state" / "audit.log"
+_audit_lock = threading.Lock()
+
+
+def audit(event: str, actor: str, detail: str = "", **extra: object) -> None:
+    rec: dict[str, object] = {
+        "ts": time.strftime("%Y-%m-%d %H:%M:%S"), "event": event, "actor": actor,
+    }
+    if detail:
+        rec["detail"] = detail
+    rec.update(extra)
+    try:
+        AUDIT_FILE.parent.mkdir(exist_ok=True)
+        with _audit_lock, open(AUDIT_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except OSError as e:
+        log("audit write failed:", e)
 
 
 # ---------------------------------------------------------------------------
@@ -105,53 +140,24 @@ else:
 
 
 # ---------------------------------------------------------------------------
-# Telegram API (urllib only)
+# Transport. All chat-protocol specifics live behind this object (see
+# transport_telegram.py for the surface a future Signal backend implements).
 # ---------------------------------------------------------------------------
-def tg(method: str, params: dict, timeout: int = 60) -> dict:
-    data = urllib.parse.urlencode(params).encode()
-    req = urllib.request.Request(f"{API}/{method}", data=data)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode())
-
-
-def _tg_len(s: str) -> int:
-    """Telegram's 4096 limit counts UTF-16 code units — emoji count double."""
-    return len(s.encode("utf-16-le")) // 2
+TRANSPORT = TelegramTransport(TOKEN)
 
 
 def send(chat_id: str, text: str) -> None:
-    # Split long replies on line/space boundaries.
-    while text:
-        chunk, text = text[:TG_MAX], text[TG_MAX:]
-        if text:
-            cut = max(chunk.rfind("\n"), chunk.rfind(" "))
-            if cut > TG_MAX // 2:
-                text, chunk = chunk[cut:] + text, chunk[:cut]
-        while _tg_len(chunk) > TG_MAX:
-            text, chunk = chunk[-200:] + text, chunk[:-200]
-        for attempt in (1, 2):  # one retry — a silently dropped reply looks like a dead bot
-            try:
-                tg("sendMessage", {"chat_id": chat_id, "text": chunk})
-                break
-            except Exception as e:  # noqa: BLE001
-                if attempt == 2:
-                    log("sendMessage failed (giving up):", e)
-                    return
-                log("sendMessage failed (retrying):", e)
-                time.sleep(2)
+    TRANSPORT.send(chat_id, text)
 
 
 def typing(chat_id: str) -> None:
-    try:
-        tg("sendChatAction", {"chat_id": chat_id, "action": "typing"})
-    except Exception:  # noqa: BLE001
-        pass
+    TRANSPORT.typing(chat_id)
 
 
 def keep_typing(chat_id: str, stop: threading.Event) -> None:
     """Re-send the typing indicator every few seconds until told to stop.
 
-    Telegram's typing action expires after ~5s; a long Claude reply would otherwise
+    The indicator expires after a few seconds; a long Claude reply would otherwise
     look like the bot died. This keeps it visibly working for the whole turn.
     """
     while not stop.is_set():
@@ -164,25 +170,53 @@ def keep_typing(chat_id: str, stop: threading.Event) -> None:
 # host-LOCAL extension (config/commands.local.json, gitignored). Same core+local
 # split as ogmactl/ogmactl.local and .env/.env.example: ship/update the source
 # without touching a user's own commands, and keep host specifics out of git.
+#
+# A command spec:
+#   argv     [subcommand]           what to pass to ogmactl (args appended)
+#   guest    bool                   guests may run it (default False)
+#   confirm  bool                   needs /confirm within 60s (default False)
+#   validate [regex, ...] | None    per-positional-arg patterns; None = pass through
+#   min_args int                    with validate: how many args are required
+#   args     str                    usage hint shown in /help
 # ---------------------------------------------------------------------------
 OGMACTL = str(BASE / "bin" / "ogmactl")
 LOCAL_COMMANDS_FILE = BASE / "config" / "commands.local.json"
 _TG_CMD_RE = re.compile(r"^[a-z0-9_]{1,32}$")     # Telegram command-name rule
 _SUBCMD_RE = re.compile(r"^[a-z0-9-]{1,40}$")     # an ogmactl subcommand token
 
+
+def _spec(run: str, *, guest: bool = False, confirm: bool = False,
+          validate: list[str] | None = None, min_args: int = 0,
+          args: str = "") -> dict:
+    compiled = None
+    if validate is not None:
+        compiled = [re.compile(p) for p in validate]
+    return {"argv": [run], "guest": guest, "confirm": confirm,
+            "validate": compiled, "min_args": min_args, "args": args}
+
+
 # CORE: only commands that exist in the public ogmactl. Underscore names map to
 # ogmactl's hyphenated subcommands. Args are passed positionally (never via a
 # shell) and ogmactl refuses anything off its own whitelist — no widening.
-CORE_OGMACTL_CMDS: dict[str, list[str]] = {
-    "/status": ["status"], "/health": ["health"], "/logs": ["logs"],
-    "/restart": ["restart"], "/backup": ["backup"], "/remember": ["remember"],
-    "/ticket": ["ticket"], "/tickets": ["tickets"],
+# /status and /health are the read-only pair guests get; /restart is the one
+# core command that can interrupt service, so it asks for /confirm.
+CORE_OGMACTL_CMDS: dict[str, dict] = {
+    "/status":   _spec("status", guest=True),
+    "/health":   _spec("health", guest=True),
+    "/logs":     _spec("logs"),
+    "/restart":  _spec("restart", confirm=True),
+    "/backup":   _spec("backup"),
+    "/remember": _spec("remember"),
+    "/ticket":   _spec("ticket"),
+    "/tickets":  _spec("tickets"),
 }
 # Commands that only exist with the LLM layer: sessions, model tuning, and the
 # scripts that are themselves claude invocations (briefing/dream/search).
 LLM_ONLY_CMDS = ("/new", "/model", "/effort", "/fallback", "/briefing", "/dream", "/search")
 NO_LLM_MSG = ("🔒 This Ogma runs in command-only mode — it executes its predefined "
               "commands, there is no AI assistant behind it. /help lists what's available.")
+GUEST_MSG = ("🔒 This chat has guest (read-only) access — that isn't available here. "
+             "/help shows what you can use.")
 
 
 def _core_menu() -> list[tuple[str, str]]:
@@ -221,14 +255,18 @@ _HELP_LLM = (
     "\n"
     "Assistant:\n"
     "/briefing — make my briefing now\n"
-    "/search <query> — search past chats"
+    "/search <query> — search past chats\n"
+    "\n"
+    "Protected commands (e.g. /restart) ask you to /confirm first."
 )
 _HELP_CMD_ONLY = (
     "Ogma here — command-only mode (no AI layer). Available commands:\n"
     "\n"
     "Ogma & host:\n"
     "/status   /health   /logs [src] [N]   /restart   /backup\n"
-    "/remember <text>   /ticket <text>   /tickets"
+    "/remember <text>   /ticket <text>   /tickets\n"
+    "\n"
+    "Protected commands (e.g. /restart) ask you to /confirm first."
 )
 CORE_HELP = _HELP_LLM if LLM else _HELP_CMD_ONLY
 
@@ -236,8 +274,9 @@ CORE_HELP = _HELP_LLM if LLM else _HELP_CMD_ONLY
 def load_local_commands() -> list[dict]:
     """Load + validate the host-local slash commands (config/commands.local.json).
 
-    Schema: {"commands": [{"cmd","run","desc","menu"?,"args"?}, ...]}. A malformed
-    file never crashes the gateway — it's logged and the core commands still work.
+    Schema: {"commands": [{"cmd","run","desc","menu"?,"args"?,"guest"?,"confirm"?,
+    "validate"?,"min_args"?}, ...]}. A malformed file never crashes the gateway —
+    it's logged and the core commands still work.
     """
     if not LOCAL_COMMANDS_FILE.exists():
         return []
@@ -252,30 +291,71 @@ def load_local_commands() -> list[dict]:
         if not (_TG_CMD_RE.match(cmd) and _SUBCMD_RE.match(run)):
             log(f"commands.local.json: skipping invalid entry {c!r}")
             continue
+        validate = c.get("validate")
+        if validate is not None:
+            try:
+                validate = [str(p) for p in validate]
+                [re.compile(p) for p in validate]
+            except (TypeError, re.error) as e:
+                # A broken pattern must fail closed for the command, not open.
+                log(f"commands.local.json: skipping /{cmd} (bad validate): {e}")
+                continue
         out.append({"cmd": cmd, "run": run,
                     "desc": str(c.get("desc", run))[:256],
                     "menu": bool(c.get("menu", False)),
-                    "args": str(c.get("args", ""))})
+                    "args": str(c.get("args", "")),
+                    "guest": bool(c.get("guest", False)),
+                    "confirm": bool(c.get("confirm", False)),
+                    "validate": validate,
+                    "min_args": max(0, int(c.get("min_args", 0) or 0))})
     return out
 
 
-# Merge core + local at import. handle()/register_menu() use the merged globals.
+# Merge core + local at import. handle()/menu registration use the merged globals.
 LOCAL_COMMANDS = load_local_commands()
-OGMACTL_CMDS: dict[str, list[str]] = dict(CORE_OGMACTL_CMDS)
-OGMACTL_CMDS.update({f"/{c['cmd']}": [c["run"]] for c in LOCAL_COMMANDS})
+OGMACTL_CMDS: dict[str, dict] = dict(CORE_OGMACTL_CMDS)
+OGMACTL_CMDS.update({
+    f"/{c['cmd']}": _spec(c["run"], guest=c["guest"], confirm=c["confirm"],
+                          validate=c["validate"], min_args=c["min_args"],
+                          args=c["args"])
+    for c in LOCAL_COMMANDS
+})
 MENU_COMMANDS: list[tuple[str, str]] = list(CORE_MENU_COMMANDS)
 MENU_COMMANDS += [(c["cmd"], c["desc"]) for c in LOCAL_COMMANDS if c["menu"]]
 
 
-def build_help() -> str:
-    """Core help, plus a 'This host:' section generated from the local commands."""
-    if not LOCAL_COMMANDS:
-        return CORE_HELP
+def build_help(guest: bool = False) -> str:
+    """Core help, plus a 'This host:' section generated from the local commands.
+
+    Guests get only the commands they can actually run.
+    """
+    if guest:
+        core = "You have guest (read-only) access. Commands:\n\n/status   /health"
+        locals_ = [c for c in LOCAL_COMMANDS if c["guest"]]
+    else:
+        core = CORE_HELP
+        locals_ = LOCAL_COMMANDS
+    if not locals_:
+        return core
     lines = "\n".join(
         f"/{c['cmd']}{(' ' + c['args']) if c['args'] else ''} — {c['desc']}"
-        for c in LOCAL_COMMANDS
+        for c in locals_
     )
-    return f"{CORE_HELP}\n\nThis host:\n{lines}"
+    return f"{core}\n\nThis host:\n{lines}"
+
+
+def validate_args(cmd: str, spec: dict, args: list[str]) -> str | None:
+    """Check args against the spec's per-position patterns. None = OK."""
+    pats = spec["validate"]
+    if pats is None:
+        return None
+    usage = f"Usage: {cmd} {spec['args']}".strip()
+    if len(args) < spec["min_args"] or len(args) > len(pats):
+        return usage
+    for a, p in zip(args, pats):
+        if not p.fullmatch(a):
+            return f"⚠️ '{a}' doesn't look right. {usage}"
+    return None
 
 
 # Commands that legitimately run long get their own limit; everything else 60s.
@@ -283,19 +363,37 @@ def build_help() -> str:
 CMD_TIMEOUTS: dict[str, int] = {"/backup": 300}
 
 
-def run_ogmactl(chat_id: str, argv: list[str], timeout: int = 60) -> None:
+def run_ogmactl(chat_id: str, actor: str, argv: list[str], timeout: int = 60) -> None:
     """Invoke ogmactl with a whitelisted subcommand + positional args; relay output."""
     typing(chat_id)
+    t0 = time.monotonic()
     try:
         proc = subprocess.run([OGMACTL, *argv], cwd=str(BASE),
                               capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         log(f"[{chat_id}] ogmactl {' '.join(argv)} killed after {timeout}s")
+        audit("cmd", actor, " ".join(argv), exit="timeout", secs=timeout)
         send(chat_id, f"⏱️ Command killed after {timeout}s — it may have stopped mid-run.")
         return
+    secs = round(time.monotonic() - t0, 1)
+    audit("cmd", actor, " ".join(argv), exit=proc.returncode, secs=secs)
     if proc.returncode != 0:
         log(f"[{chat_id}] ogmactl {' '.join(argv)} exited {proc.returncode}")
-    send(chat_id, (proc.stdout or proc.stderr or "").strip() or "(no output)")
+    out = (proc.stdout or proc.stderr or "").strip() or "(no output)"
+    if len(out) > DOC_THRESHOLD:
+        # A wall of 4000-char chunks is unreadable and floods the chat; a file
+        # scrolls, searches, and forwards properly.
+        TRANSPORT.send_document(chat_id, f"{argv[0]}.txt", out,
+                                caption=f"{argv[0]} output ({len(out)} chars)")
+        return
+    send(chat_id, out)
+
+
+def execute_command(chat_id: str, actor: str, cmd: str, argv: list[str]) -> None:
+    """Run a whitelisted command (directly or after /confirm)."""
+    if cmd == "/restart":
+        send(chat_id, "♻️ Restarting the gateway…")
+    run_ogmactl(chat_id, actor, argv, CMD_TIMEOUTS.get(cmd, 60))
 
 
 def script_busy(script: str) -> bool:
@@ -328,29 +426,7 @@ def launch_detached(script: str) -> bool:
     return True
 
 
-def register_menu() -> None:
-    """Register the slash-command menu with Telegram (server-side; idempotent).
-
-    A chat resolves its command list most-specific-scope-first, so we register at
-    BOTH `default` (groups / fallback) AND `all_private_chats`. The latter is
-    required: any commands previously set at the private-chats scope would otherwise
-    shadow the default-scope list and the menu would show a stale set in DMs.
-    """
-    payload = json.dumps([{"command": c, "description": d} for c, d in MENU_COMMANDS])
-    for scope in (None, {"type": "all_private_chats"}):
-        params = {"commands": payload}
-        if scope:
-            params["scope"] = json.dumps(scope)
-        label = scope["type"] if scope else "default"
-        try:
-            r = tg("setMyCommands", params, timeout=15)
-            log(f"menu registered ({label})" if r.get("ok")
-                else f"menu register failed ({label}): {r.get('description')}")
-        except Exception as e:  # noqa: BLE001
-            log(f"setMyCommands error ({label}):", e)
-
-
-def handle(chat_id: str, text: str) -> None:
+def handle(chat_id: str, actor: str, text: str, guest: bool) -> None:
     stripped = text.strip()
     parts = stripped.split(maxsplit=1)
     cmd = parts[0].lower() if parts else ""
@@ -359,14 +435,43 @@ def handle(chat_id: str, text: str) -> None:
     arg = parts[1].strip() if len(parts) > 1 else ""
 
     if cmd in ("/start", "/help"):
-        send(chat_id, build_help())
+        send(chat_id, build_help(guest))
         return
+
+    # Two-step confirmation for protected commands.
+    if cmd == "/confirm":
+        with _confirm_lock:
+            pending = _pending_confirm.pop(chat_id, None)
+        if not pending:
+            send(chat_id, "Nothing awaiting confirmation.")
+            return
+        expiry, pcmd, pargv = pending
+        if time.time() > expiry:
+            audit("confirm-expired", actor, pcmd)
+            send(chat_id, f"⌛ {pcmd} expired unconfirmed — send it again if you still want it.")
+            return
+        execute_command(chat_id, actor, pcmd, pargv)
+        return
+    if cmd == "/cancel":
+        with _confirm_lock:
+            pending = _pending_confirm.pop(chat_id, None)
+        send(chat_id, f"🚫 {pending[1]} cancelled." if pending
+             else "Nothing awaiting confirmation.")
+        return
+
+    # Guests get the read-only command subset and nothing else.
+    if guest:
+        spec = OGMACTL_CMDS.get(cmd)
+        if spec is None or not spec["guest"]:
+            audit("guest-refused", actor, cmd or text[:40])
+            send(chat_id, GUEST_MSG)
+            return
 
     # LLM-layer commands: answered by the layer when it's on, refused otherwise.
     if cmd in LLM_ONLY_CMDS and LLM is None:
         send(chat_id, NO_LLM_MSG)
         return
-    if LLM is not None:
+    if LLM is not None and not guest:
         reply = LLM.command(cmd, chat_id, arg)   # /new /model /effort /fallback
         if reply is not None:
             send(chat_id, reply)
@@ -374,9 +479,21 @@ def handle(chat_id: str, text: str) -> None:
 
     # Deterministic commands -> ogmactl (no LLM call; instant and free).
     if cmd in OGMACTL_CMDS:
-        if cmd == "/restart":
-            send(chat_id, "♻️ Restarting the gateway…")
-        run_ogmactl(chat_id, OGMACTL_CMDS[cmd] + arg.split(), CMD_TIMEOUTS.get(cmd, 60))
+        spec = OGMACTL_CMDS[cmd]
+        args = arg.split()
+        problem = validate_args(cmd, spec, args)
+        if problem:
+            send(chat_id, problem)
+            return
+        argv = spec["argv"] + args
+        if spec["confirm"]:
+            with _confirm_lock:
+                _pending_confirm[chat_id] = (time.time() + CONFIRM_TTL, cmd, argv)
+            audit("confirm-wait", actor, cmd)
+            send(chat_id, f"⚠️ {cmd} is protected — send /confirm within "
+                          f"{CONFIRM_TTL}s to run it (or /cancel).")
+            return
+        execute_command(chat_id, actor, cmd, argv)
         return
 
     # Script-backed commands that deliver their own output, run detached.
@@ -385,6 +502,7 @@ def handle(chat_id: str, text: str) -> None:
             send(chat_id, "🗞️ A briefing is already being generated — hang tight.")
             return
         ok = launch_detached("briefing")
+        audit("script", actor, "briefing", started=ok)
         send(chat_id, "🗞️ Putting your briefing together — it'll arrive shortly."
                       if ok else "⚠️ briefing script not found.")
         return
@@ -393,6 +511,7 @@ def handle(chat_id: str, text: str) -> None:
             send(chat_id, "🌙 A consolidation pass is already running.")
             return
         ok = launch_detached("dream")
+        audit("script", actor, "dream", started=ok)
         send(chat_id, "🌙 Consolidating memory in the background (no output expected)."
                       if ok else "⚠️ dream script not found.")
         return
@@ -412,38 +531,28 @@ def handle(chat_id: str, text: str) -> None:
         return
 
     # Show "typing…" immediately on receipt, synchronously, so it is guaranteed
-    # to reach Telegram before the (blocking) Claude call starts — then the
+    # to reach the chat before the (blocking) Claude call starts — then the
     # keepalive thread refreshes it (~every 4s) for the rest of the turn.
     typing(chat_id)
     stop = threading.Event()
     typer = threading.Thread(target=keep_typing, args=(chat_id, stop), daemon=True)
     typer.start()
+    t0 = time.monotonic()
     try:
         reply = LLM.run_turn(chat_id, text)
     finally:
         stop.set()
+    audit("llm", actor, text[:80], secs=round(time.monotonic() - t0, 1))
     send(chat_id, reply)
 
 
-def validate_token() -> tuple[bool, str]:
-    """Check the bot token via getMe so a bad token is an obvious one-line log,
-    not an endless stream of 401s from getUpdates."""
-    try:
-        r = tg("getMe", {}, timeout=15)
-    except Exception as e:  # noqa: BLE001
-        return (False, str(e))
-    if r.get("ok"):
-        return (True, (r.get("result") or {}).get("username", "?"))
-    return (False, r.get("description", "not ok"))
-
-
-def _worker(chat_id: str, text: str) -> None:
+def _worker(chat_id: str, actor: str, text: str, guest: bool) -> None:
     """Handle one message in its own thread, then release the per-chat slot."""
     # Log completion + duration: the receipt line alone can't distinguish "still
     # running", "killed mid-flight", and "reply delayed by a Telegram stall".
     t0 = time.monotonic()
     try:
-        handle(chat_id, text)
+        handle(chat_id, actor, text, guest)
     except Exception as e:  # noqa: BLE001
         log("handler error:", e)
         send(chat_id, "⚠️ Something broke handling that. Logged it.")
@@ -456,56 +565,55 @@ def _worker(chat_id: str, text: str) -> None:
 def main() -> None:
     if not TOKEN:
         sys.exit("TELEGRAM_BOT_TOKEN is not set (see .env.example).")
-    ok_token, info = validate_token()
+    ok_token, info = TRANSPORT.validate()
     if ok_token:
         log(f"token OK — bot @{info}")
-        register_menu()
+        TRANSPORT.register_menu(MENU_COMMANDS)
     else:
         log(f"⚠️ TOKEN CHECK FAILED ({info}). Fix TELEGRAM_BOT_TOKEN in .env and restart.")
     mode = f"llm={LLM_MODE} workdir={LLM.workdir}" if LLM else "command-only"
-    log(f"Ogma up. {mode} allowed={ALLOWED or '(none — locked down)'}")
-    offset = 0
-    while True:
-        try:
-            resp = tg("getUpdates", {"offset": offset, "timeout": 50}, timeout=70)
-        except Exception as e:  # noqa: BLE001
-            log("getUpdates error:", e)
-            time.sleep(5)
+    log(f"Ogma up. transport={TRANSPORT.name} {mode} "
+        f"allowed={ALLOWED or '(none — locked down)'}"
+        + (f" guests={GUESTS}" if GUESTS else ""))
+    for upd in TRANSPORT.updates():
+        chat_id, from_id, text = upd["chat_id"], upd["from_id"], upd["text"]
+        # Authorize the SENDER. In a private chat that's the chat itself; in a
+        # group (negative chat id) it's the author — otherwise allow-listing a
+        # group would hand the command runner to every member.
+        actor = from_id if (chat_id.startswith("-") and from_id) else chat_id
+        if actor in ALLOWED:
+            guest = False
+        elif actor in GUESTS:
+            guest = True
+        else:
+            # Reply (and log) at most once per cooldown per sender — anyone who
+            # finds the bot can message it, and answering every attempt is free
+            # spam amplification plus a log flood. First contact still gets the
+            # ID hint, which bin/setup's authorization flow relies on.
+            now = time.time()
+            if now - _denied.get(actor, 0.0) >= DENY_COOLDOWN:
+                if len(_denied) > 1000:  # strangers must not grow this unbounded
+                    _denied.clear()
+                _denied[actor] = now
+                log("denied", actor, f"(chat {chat_id})")
+                audit("denied", actor, chat=chat_id)
+                send(chat_id, f"⛔ Not authorized. Your ID is `{actor}` — "
+                              "add it to TELEGRAM_ALLOWED_USERS to enable access.")
             continue
-        for upd in resp.get("result", []):
-            offset = upd["update_id"] + 1
-            msg = upd.get("message") or upd.get("edited_message")
-            if not msg or "text" not in msg:
-                continue
-            chat_id = str(msg["chat"]["id"])
-            text = msg["text"]
-            if chat_id not in ALLOWED:
-                # Reply (and log) at most once per cooldown per chat — anyone who finds
-                # the bot can message it, and answering every attempt is free spam
-                # amplification plus a log flood. First contact still gets the chat-ID
-                # hint, which bin/setup's authorization flow relies on.
-                now = time.time()
-                if now - _denied.get(chat_id, 0.0) >= DENY_COOLDOWN:
-                    if len(_denied) > 1000:  # strangers must not grow this unbounded
-                        _denied.clear()
-                    _denied[chat_id] = now
-                    log("denied chat", chat_id)
-                    send(chat_id, f"⛔ Not authorized. Your chat ID is `{chat_id}` — "
-                                  "add it to TELEGRAM_ALLOWED_USERS to enable access.")
-                continue
-            log(f"[{chat_id}] {text[:80]}")
-            # Concurrency guard: one in-flight message per chat. Drop a second one
-            # (with a notice) rather than overlapping runs. Handle in a thread so a
-            # long run in one chat doesn't block polling or other chats.
-            with _inflight_lock:
-                busy = chat_id in _inflight
-                if not busy:
-                    _inflight.add(chat_id)
-            if busy:
-                send(chat_id, "⏳ Still working on your previous message — give me a moment, "
-                              "then resend if needed.")
-                continue
-            threading.Thread(target=_worker, args=(chat_id, text), daemon=True).start()
+        log(f"[{chat_id}] {text[:80]}")
+        # Concurrency guard: one in-flight message per chat. Drop a second one
+        # (with a notice) rather than overlapping runs. Handle in a thread so a
+        # long run in one chat doesn't block polling or other chats.
+        with _inflight_lock:
+            busy = chat_id in _inflight
+            if not busy:
+                _inflight.add(chat_id)
+        if busy:
+            send(chat_id, "⏳ Still working on your previous message — give me a moment, "
+                          "then resend if needed.")
+            continue
+        threading.Thread(target=_worker, args=(chat_id, actor, text, guest),
+                         daemon=True).start()
 
 
 if __name__ == "__main__":

@@ -17,6 +17,8 @@ invert that.
 
 ## Phase 1 — Invert the dependency (make Claude optional)
 
+*Status: **shipped** on `feature/optional-llm` (2026-07-02).*
+
 Make the gateway boot and run in **command-only mode** when Claude is absent
 or disabled.
 
@@ -35,6 +37,10 @@ or disabled.
   assistant layer.
 
 ## Phase 2 — Harden the command runner into the actual product
+
+*Status: **shipped** on `feature/optional-llm` (2026-07-02) — confirm, validation,
+audit log, guest role, file output, and the group sender check. Still open: the
+"write your own ogmactl.local subcommand" tutorial in docs/.*
 
 Features the LLM used to paper over, now first-class:
 
@@ -57,6 +63,9 @@ Features the LLM used to paper over, now first-class:
   want to code everything themselves.
 
 ## Phase 3 — Transport abstraction (the Signal on-ramp)
+
+*Status: **seam cut** on `feature/optional-llm` (2026-07-02) — see
+`transport_telegram.py`. The Signal backend itself is still future work.*
 
 Pull Telegram specifics (`tg()`, `send()`, typing, the `getUpdates` loop,
 menu registration) behind a small transport interface: `poll() → messages`,
@@ -84,6 +93,9 @@ an implementation, not a refactor. Nothing breaks running instances:
 command-only mode is opt-in-by-absence.
 
 ## Security note (pre-existing)
+
+*Fixed with Phase 2 (2026-07-02): in group chats the gateway now authorizes
+the message sender (`from.id`), not just the chat.*
 
 The gateway authorizes on `chat.id`. Fine for private chats, but if a group
 chat is ever allow-listed, every member of that group can run commands.

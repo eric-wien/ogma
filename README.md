@@ -53,7 +53,11 @@ This bridges a chat app to an agent on a machine that may hold **SSH keys, walle
 and sudo**. Treat it accordingly:
 
 - **Keep `TELEGRAM_ALLOWED_USERS` tight** — only your own chat ID(s). Everyone else is denied, but
-  the bot token itself is a secret: `chmod 600 .env`.
+  the bot token itself is a secret: `chmod 600 .env`. In group chats the message **sender** is
+  authorized, not just the group — but prefer private chats. Second parties get read-only access
+  via `TELEGRAM_GUEST_USERS`, not the admin list.
+- Everything the bot executes lands in the **audit log** (`state/audit.log`); destructive commands
+  can be gated behind **/confirm** and arguments validated against regexes before execution.
 - The persona (`workspace/CLAUDE.md`) tells Claude to refuse touching secrets over chat, but that
   is **guidance, not a sandbox.**
 - Tool permissions default to the **safe** posture: tools needing approval are skipped in headless
@@ -153,8 +157,13 @@ See [`skills/README.md`](skills/README.md) for details and how to write your own
 Always available (the command runner — deterministic, no LLM call):
 - `/status` `/health` `/logs` `/restart` `/backup` `/remember` `/ticket` `/tickets` — see
   [Self-management](#self-management-ogmactl)
-- your own host-local commands from `config/commands.local.json`
+- your own host-local commands from `config/commands.local.json` — with optional per-argument
+  regex validation (`"validate"`), a guest flag, and `"confirm": true` for anything destructive
+- `/confirm` / `/cancel` — protected commands (core: `/restart`) arm instead of firing and run
+  only after `/confirm` within 60s
 - `/help` — usage
+- every executed command is recorded in the append-only audit log (`state/audit.log`, JSON
+  lines: who, what, exit code, duration) — view it with `/logs audit`
 
 Only with the LLM layer (`OGMA_LLM=claude`, the default when the `claude` CLI is installed):
 - `/new` — start a fresh Claude session for this chat
@@ -168,7 +177,8 @@ Only with the LLM layer (`OGMA_LLM=claude`, the default when the `claude` CLI is
 | Variable | Purpose | Default |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | BotFather token (**required**) | — |
-| `TELEGRAM_ALLOWED_USERS` | comma-separated allowed chat IDs (**required**) | — |
+| `TELEGRAM_ALLOWED_USERS` | comma-separated allowed chat IDs (**required**; full/admin access) | — |
+| `TELEGRAM_GUEST_USERS` | chat IDs with read-only access: `/status`, `/health`, local commands marked `"guest": true` — no LLM | — |
 | `OGMA_LLM` | `claude` = assistant layer on; `off` = command-only mode (no LLM) | `claude` if the CLI exists |
 | `CLAUDE_BIN` | path to the `claude` CLI | `~/.local/bin/claude` |
 | `CLAUDE_TIMEOUT` | per-message timeout (seconds) | `300` |

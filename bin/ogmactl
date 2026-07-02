@@ -18,7 +18,7 @@ LOCAL="$BASE/bin/ogmactl.local"
 
 usage() {
   echo "ogmactl: allowed commands — status | logs [source] [N] | restart | health | backup | remember [--type T] <text> | set-persona <field> [value] | ticket <text> | tickets"
-  echo "          log sources: gateway (default), dream, briefing"
+  echo "          log sources: gateway (default), dream, briefing, audit"
   echo "          remember types: user | feedback | project (default) | reference"
   echo "          set-persona fields: name | style | language | show | clear"
   [ -x "$LOCAL" ] && "$LOCAL" help 2>/dev/null
@@ -54,7 +54,8 @@ case "$cmd" in
       gateway)  file="$LOG" ;;
       dream)    file="$BASE/dream.log" ;;
       briefing) file="$BASE/briefing.log" ;;
-      *) echo "usage: ogmactl logs [source] [N]   (source: gateway|dream|briefing)"; exit 2 ;;
+      audit)    file="$BASE/state/audit.log" ;;
+      *) echo "usage: ogmactl logs [source] [N]   (source: gateway|dream|briefing|audit)"; exit 2 ;;
     esac
     if ! [[ "$n" =~ ^[0-9]+$ ]] || (( n < 1 || n > 200 )); then
       echo "usage: ogmactl logs [source] [N]   (N = 1..200 lines)"; exit 2
