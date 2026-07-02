@@ -290,8 +290,11 @@ def run_ogmactl(chat_id: str, argv: list[str], timeout: int = 60) -> None:
         proc = subprocess.run([OGMACTL, *argv], cwd=str(BASE),
                               capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
+        log(f"[{chat_id}] ogmactl {' '.join(argv)} killed after {timeout}s")
         send(chat_id, f"⏱️ Command killed after {timeout}s — it may have stopped mid-run.")
         return
+    if proc.returncode != 0:
+        log(f"[{chat_id}] ogmactl {' '.join(argv)} exited {proc.returncode}")
     send(chat_id, (proc.stdout or proc.stderr or "").strip() or "(no output)")
 
 
@@ -436,12 +439,16 @@ def validate_token() -> tuple[bool, str]:
 
 def _worker(chat_id: str, text: str) -> None:
     """Handle one message in its own thread, then release the per-chat slot."""
+    # Log completion + duration: the receipt line alone can't distinguish "still
+    # running", "killed mid-flight", and "reply delayed by a Telegram stall".
+    t0 = time.monotonic()
     try:
         handle(chat_id, text)
     except Exception as e:  # noqa: BLE001
         log("handler error:", e)
         send(chat_id, "⚠️ Something broke handling that. Logged it.")
     finally:
+        log(f"[{chat_id}] done in {time.monotonic() - t0:.1f}s")
         with _inflight_lock:
             _inflight.discard(chat_id)
 

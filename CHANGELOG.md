@@ -19,6 +19,15 @@ remote command runner; Claude Code becomes an optional assistant layer.
   first run (and via `--reconfigure llm`); command-only installs skip the
   persona/model/overlays/skills sections. `--check` and the summary are mode-aware.
 - `docs/roadmap.md` — the 4-phase plan this comes from.
+- The gateway logs every message's completion + duration (`[chat] done in 1.2s`)
+  and abnormal ogmactl exits — first half of the Phase 2 audit log, and it makes
+  "slow vs. dead vs. killed mid-flight" a one-glance diagnosis.
+
+### Fixed
+- `ogmactl restart` now passes `AccuracySec=1s` to its detached systemd timer.
+  Without it systemd coalesces timers within a 1-minute window, so the promised
+  "~8s" restart could fire a minute-plus late — long enough to swallow a command
+  received just before the kill (observed 2026-07-02).
 
 ### Changed
 - Everything Claude-specific moved out of `gateway.py` into the new `llm_claude.py`

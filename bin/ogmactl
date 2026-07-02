@@ -64,7 +64,9 @@ case "$cmd" in
   restart)
     # Schedule a detached restart in its own transient scope so it survives this
     # process (and the whole service cgroup) being torn down by the restart.
-    if systemd-run --user --on-active=8 \
+    # AccuracySec=1s: without it systemd coalesces timers within a 1-MINUTE window,
+    # so "~8s" could legitimately become a minute-plus (observed 2026-07-02).
+    if systemd-run --user --on-active=8 --timer-property=AccuracySec=1s \
          systemctl --user restart "$SVC" >/dev/null 2>&1; then
       echo "✅ Restart scheduled in ~8s. I'll be back momentarily."
     else
