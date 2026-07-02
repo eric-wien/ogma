@@ -18,7 +18,7 @@ jobs:
           python-version: "3.11"
 
       - name: Python syntax (py_compile)
-        run: python3 -m py_compile gateway.py hooks/*.py bin/news-fetch
+        run: python3 -m py_compile gateway.py llm_claude.py transport_telegram.py hooks/*.py bin/news-fetch
 
       - name: Shell syntax (bash -n)
         run: |

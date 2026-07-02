@@ -15,7 +15,8 @@ MAX="${OGMA_LOG_MAX:-5242880}"     # trim when larger than this (5 MiB)
 KEEP="${OGMA_LOG_KEEP:-1048576}"   # keep this many newest bytes (1 MiB)
 
 shopt -s nullglob
-for log in "$BASE"/*.log; do
+# state/*.log covers the gateway's append-only audit log (state/audit.log).
+for log in "$BASE"/*.log "$BASE"/state/*.log; do
   size="$(stat -c %s "$log" 2>/dev/null || echo 0)"
   (( size > MAX )) || continue
   tmp="$(mktemp "${TMPDIR:-/tmp}/ogma-logtrim.XXXXXX")" || continue

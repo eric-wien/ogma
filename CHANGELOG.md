@@ -4,6 +4,113 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.0.0] — 2026-07-02
+
+**The repositioning release** (all four phases of docs/roadmap.md): Ogma's core
+is now the secure remote command runner — chat-driven execution of commands
+*you* predefine — and Claude Code becomes an optional assistant layer
+(`OGMA_LLM`). Major version because behavior changes incompatibly below, and
+because the project's core definition shifted.
+
+### ⚠️ Breaking changes
+- **`/restart` requires `/confirm`.** Protected commands (core `/restart`, plus
+  any local command marked `"confirm": true`) arm instead of firing and run
+  only after `/confirm` within the window (default 180s, `OGMA_CONFIRM_TTL`).
+- **Group chats authorize the sender, not the chat.** An allow-listed group no
+  longer grants every member access — each sender's user ID must be in
+  `TELEGRAM_ALLOWED_USERS` (or `TELEGRAM_GUEST_USERS`). Private chats are
+  unaffected.
+- **Long command output (>~8k chars) is delivered as a document**, not as a
+  series of 4000-char text messages.
+- **`bin/setup --reconfigure` numeric section IDs shifted** (the new `llm`
+  section is 2; persona/model/… moved down one). Section *names* are unchanged
+  — prefer those in scripts.
+- **A missing `claude` CLI no longer aborts startup** — the gateway runs in
+  command-only mode instead. If you relied on the hard failure to catch a
+  broken install, check `bin/setup --check` or the startup log line.
+- **Internals reorganized** for anyone carrying patches: everything
+  Claude-specific moved from `gateway.py` to `llm_claude.py`, everything
+  Telegram-specific to `transport_telegram.py`.
+
+No `.env` migration is needed: defaults preserve existing behavior
+(`OGMA_LLM` defaults to `claude` when the CLI exists).
+
+### Added (Phase 2 — hardened command runner)
+- **/confirm for protected commands.** `"confirm": true` on a local command (and
+  core `/restart`) arms the command instead of running it; it fires only on
+  /confirm within the confirm window (default 180s, `OGMA_CONFIRM_TTL`; 60s
+  proved too tight for phone-paced replies), /cancel disarms. Typos can no
+  longer restart the gateway.
+- **Per-argument validation.** `"validate": [regex, ...]` + `"min_args"` on a
+  local command are checked by the gateway before anything executes; a broken
+  pattern disables the command (fails closed).
+- **Append-only audit log** (`state/audit.log`, JSON lines): every executed
+  command with exit code + duration, LLM turns, denials, confirmations, guest
+  refusals. Readable over chat via `/logs audit`; capped by logtrim; included
+  in backups (state/ is host-local).
+- **Guest role.** `TELEGRAM_GUEST_USERS` chats get a read-only subset: core
+  `/status` + `/health` plus local commands marked `"guest": true` — no LLM, no
+  free text. Admin list (`TELEGRAM_ALLOWED_USERS`) is unchanged.
+- **Long output arrives as a file** instead of a flood of 4000-char chunks
+  (threshold ~8k chars), with a chunked-send fallback if the upload fails.
+- **Delivery-lag handling.** Telegram's server-side send timestamp now flows
+  through the transport: the receipt log shows real inbound lag
+  (`(sent 58s ago)`), /confirm is judged by when the user *sent* it rather
+  than when a flaky uplink finally delivered it, and the long-poll window is
+  shortened (25s/35s) so a silently dead poll can't sit on incoming messages
+  for 75 seconds.
+- **Group hardening:** authorization now checks the message *sender* in group
+  chats, not just the chat id — allow-listing a group no longer hands the
+  command runner to every member.
+
+### Added (Phase 4 — the three-tier split)
+- The README now maps the repo as **core** (command runner, stdlib only) /
+  **LLM layer** (`OGMA_LLM=claude`) / **assistant layer** (persona, memory,
+  briefing, dream, skills), and `docs/extending.md` is a step-by-step tutorial
+  for adding your own commands to the core tier without forking.
+- `bin/briefing` and `bin/dream` guard themselves: with `OGMA_LLM=off` or no
+  claude CLI they exit 0 with a log line instead of failing — a leftover
+  enabled timer on a command-only install is a no-op, not a nightly error.
+- `bin/setup` skips installing the briefing/dream systemd units on
+  command-only installs and adapts its "optional routines" hint.
+
+### Changed (Phase 3 — transport seam)
+- All Telegram specifics (long-poll loop, chunked sending + UTF-16 length rule,
+  typing indicator, menu registration, document upload) extracted from
+  gateway.py into the new `transport_telegram.py` behind a six-method surface
+  (`validate/register_menu/updates/send/send_document/typing`). A future Signal
+  backend (signal-cli) implements the same surface without touching the gateway.
+
+Phase 1 (previously listed below): Claude layer optional via OGMA_LLM.
+
+### Added
+- **Command-only mode.** `OGMA_LLM=off` (or simply a missing `claude` binary) runs the
+  gateway as a pure command runner: whitelisted ogmactl commands only, free text gets a
+  refusal, LLM commands (`/new`, `/model`, `/effort`, `/fallback`, `/briefing`, `/dream`,
+  `/search`) are refused and dropped from the Telegram menu and `/help`. Python stdlib
+  is then the only dependency.
+- `bin/setup` gained an `llm` section: choose "assistant layer" vs. "commands only" on
+  first run (and via `--reconfigure llm`); command-only installs skip the
+  persona/model/overlays/skills sections. `--check` and the summary are mode-aware.
+- `docs/roadmap.md` — the 4-phase plan this comes from.
+- The gateway logs every message's completion + duration (`[chat] done in 1.2s`)
+  and abnormal ogmactl exits — first half of the Phase 2 audit log, and it makes
+  "slow vs. dead vs. killed mid-flight" a one-glance diagnosis.
+
+### Fixed
+- `ogmactl restart` now passes `AccuracySec=1s` to its detached systemd timer.
+  Without it systemd coalesces timers within a 1-minute window, so the promised
+  "~8s" restart could fire a minute-plus late — long enough to swallow a command
+  received just before the kill (observed 2026-07-02).
+
+### Changed
+- Everything Claude-specific moved out of `gateway.py` into the new `llm_claude.py`
+  (headless invocation, session persistence, model/effort/fallback handling). The
+  gateway imports it only when the LLM layer is on and talks to it through returned
+  reply strings — groundwork for the Phase 3 transport abstraction.
+- A missing `claude` binary no longer aborts gateway startup (was `sys.exit`); it logs
+  and falls back to command-only mode.
+
 ## [1.3.0] — 2026-07-02
 
 One release for the rest of the 2026-07-01 code-review findings.

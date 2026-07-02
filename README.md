@@ -2,27 +2,41 @@
 
 [![CI](https://github.com/eric-wien/ogma/actions/workflows/ci.yml/badge.svg)](https://github.com/eric-wien/ogma/actions/workflows/ci.yml)
 
-A minimal personal-assistant gateway: talk to **Claude Code** from **Telegram**, from anywhere.
+A secure remote command runner for your own machine, driven from **Telegram** — with an optional
+**Claude Code** assistant layer on top. Define the commands your box exposes (a strict whitelist,
+no shell), run them from your phone from anywhere; optionally let free-text chat go to a resumable
+headless `claude` session for a conversation partner that can perform tasks and analyze.
 Inspired by [Nous Research's Hermes Agent](https://github.com/NousResearch/hermes-agent), rebuilt
 on Claude Code's native skills + memory + subagents. Named for Ogma, the Celtic god of eloquence
 and the inventor of writing.
 
-One always-on Python process (stdlib only) long-polls Telegram and bridges each chat to a
-resumable headless `claude` session. No inbound ports, no pip installs, no API key plumbing — it
-reuses your existing Claude Code auth on the box.
+One always-on Python process (stdlib only) long-polls Telegram. No inbound ports, no pip installs,
+no API key plumbing — the optional LLM layer reuses your existing Claude Code auth on the box, and
+without it there is no Claude dependency at all (`OGMA_LLM=off`).
+
+Ogma is three tiers — each optional layer sits on the one below and can be left off:
 
 ```
-gateway.py               the bridge (Telegram long-poll <-> `claude -p`)
-workspace/               Claude's working dir; workspace/CLAUDE.md is the assistant persona
-workspace/.claude/       gateway-scoped settings (the memory-persist Stop hook)
-hooks/persist-nudge.py   the out-of-band "remember durable facts" pass (Stop hook)
-bin/                     setup (guided installer) + ogmactl (self-management) + routines (briefing/dream/health)
-skills/                  reusable procedures (tickets, session-search, daily-briefing) → ~/.claude/skills/
-tickets/                 the bot↔interactive-session bridge (see docs/workflow.md)
-systemd/                 unit templates for always-on operation
-docs/workflow.md         how the whole thing is designed — start here
-.env.example             config template
+CORE — the command runner (stdlib only, no Claude anywhere)
+  gateway.py               allow-list/roles, /confirm, arg validation, audit, dispatch
+  transport_telegram.py    all Telegram specifics behind a small seam (Signal-ready)
+  bin/ogmactl              the ONLY executable the bot can run (whitelisted subcommands)
+  bin/ogmactl.local        + config/commands.local.json — YOUR commands (docs/extending.md)
+  bin/setup|backup|restore|health-check|logtrim|tg-send, systemd/, tickets/
+
+LLM LAYER (optional; OGMA_LLM=claude) — free-text chat
+  llm_claude.py            headless `claude -p` runs, per-chat resumable sessions
+
+ASSISTANT LAYER (optional; needs the LLM layer) — the personal-assistant extras
+  workspace/CLAUDE.md      persona (+ gitignored host overlays)
+  hooks/persist-nudge.py   memory-persist Stop hook
+  bin/briefing|dream       morning briefing / nightly memory consolidation
+  skills/                  tickets, session-search, daily-briefing → ~/.claude/skills/
 ```
+
+`docs/workflow.md` explains how the tiers are meant to be used together;
+`docs/extending.md` is the tutorial for adding your own commands (core tier, no fork);
+`docs/roadmap.md` is where this is heading. `.env.example` documents every setting.
 
 ## How it works (read this)
 Ogma has **two surfaces, one brain, bridged by tickets**: an always-on but deliberately *restricted*
@@ -30,6 +44,15 @@ Telegram bot, and your *full-power* interactive Claude Code sessions. When the b
 something (edit files, run code), it files a **ticket** instead of faking it; you clear tickets in a
 full session with the `tickets` skill, and shared memory + skills carry the learning forward. The
 full design — and why the bot is intentionally limited — is in **[docs/workflow.md](docs/workflow.md)**.
+
+### Command-only mode (no Claude required)
+The command runner works entirely without the LLM: set `OGMA_LLM=off` (or simply don't install the
+`claude` CLI) and the gateway runs your whitelisted `ogmactl` commands and nothing else — free text
+gets a polite refusal, and the LLM commands (`/new`, `/model`, `/briefing`, `/search`, …) disappear
+from the menu. This is the core of Ogma: a chat-driven remote terminal restricted to commands **you**
+predefined. Add your own via `bin/ogmactl.local` + `config/commands.local.json` — no LLM, no fork,
+no gateway edits: **[docs/extending.md](docs/extending.md)** is the step-by-step tutorial. The
+direction from here is sketched in **[docs/roadmap.md](docs/roadmap.md)**.
 
 > **Self-host model.** Ogma is meant to be run by you, on your own always-on machine, talking to
 > your own Telegram bot, using your own Claude Code auth. There is no hosted service and nothing
@@ -41,7 +64,11 @@ This bridges a chat app to an agent on a machine that may hold **SSH keys, walle
 and sudo**. Treat it accordingly:
 
 - **Keep `TELEGRAM_ALLOWED_USERS` tight** — only your own chat ID(s). Everyone else is denied, but
-  the bot token itself is a secret: `chmod 600 .env`.
+  the bot token itself is a secret: `chmod 600 .env`. In group chats the message **sender** is
+  authorized, not just the group — but prefer private chats. Second parties get read-only access
+  via `TELEGRAM_GUEST_USERS`, not the admin list.
+- Everything the bot executes lands in the **audit log** (`state/audit.log`); destructive commands
+  can be gated behind **/confirm** and arguments validated against regexes before execution.
 - The persona (`workspace/CLAUDE.md`) tells Claude to refuse touching secrets over chat, but that
   is **guidance, not a sandbox.**
 - Tool permissions default to the **safe** posture: tools needing approval are skipped in headless
@@ -67,7 +94,7 @@ install without changing anything, run `bin/setup --check` — it validates your
 model/effort/fallback, the `claude` CLI, the service, and installed skills.
 
 **Re-running on an existing install.** First run does the full interview. When `.env` already exists,
-`bin/setup` instead lets you pick **which sections to revisit** — `env`, `persona`, `model`,
+`bin/setup` instead lets you pick **which sections to revisit** — `env`, `llm`, `persona`, `model`,
 `overlays`, `skills`, `systemd`, `auth` — so a small tweak doesn't walk the whole flow. Pick from
 the menu, or go non-interactive: `bin/setup --reconfigure systemd,skills` (or `--all` for the classic
 full run). This is the easiest way to **install a newly-added systemd unit after a `git pull`**:
@@ -138,18 +165,33 @@ See [`skills/README.md`](skills/README.md) for details and how to write your own
 > 216/GROUP for a user service).
 
 ## Commands
+Always available (the command runner — deterministic, no LLM call):
+- `/status` `/health` `/logs` `/restart` `/backup` `/remember` `/ticket` `/tickets` — see
+  [Self-management](#self-management-ogmactl)
+- your own host-local commands from `config/commands.local.json` — with optional per-argument
+  regex validation (`"validate"`), a guest flag, and `"confirm": true` for anything destructive
+- `/confirm` / `/cancel` — protected commands (core: `/restart`) arm instead of firing and run
+  only after `/confirm` within the confirm window (default 180s, `OGMA_CONFIRM_TTL`)
+- `/help` — usage
+- every executed command is recorded in the append-only audit log (`state/audit.log`, JSON
+  lines: who, what, exit code, duration) — view it with `/logs audit`
+
+Only with the LLM layer (`OGMA_LLM=claude`, the default when the `claude` CLI is installed):
 - `/new` — start a fresh Claude session for this chat
 - `/model [name]` — show or change the model live (`sonnet`, `haiku`, `opus`, a full id, or `default`); persists to `.env`
 - `/effort [level]` — show or change reasoning effort live (`low`/`medium`/`high`/`xhigh`/`max`/`default`); persists to `.env`
 - `/fallback [name]` — model used automatically if the main one is unavailable (`none` to clear); persists to `.env`
-- `/help` — usage
-- anything else — sent to Claude
+- `/briefing` `/dream` `/search` — the assistant routines
+- anything else — sent to Claude (in command-only mode free text gets a refusal instead)
 
 ## Configuration reference (`.env`)
 | Variable | Purpose | Default |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | BotFather token (**required**) | — |
-| `TELEGRAM_ALLOWED_USERS` | comma-separated allowed chat IDs (**required**) | — |
+| `TELEGRAM_ALLOWED_USERS` | comma-separated allowed chat IDs (**required**; full/admin access) | — |
+| `TELEGRAM_GUEST_USERS` | chat IDs with read-only access: `/status`, `/health`, local commands marked `"guest": true` — no LLM | — |
+| `OGMA_LLM` | `claude` = assistant layer on; `off` = command-only mode (no LLM) | `claude` if the CLI exists |
+| `OGMA_CONFIRM_TTL` | seconds a /confirm-protected command stays armed (min 30) | `180` |
 | `CLAUDE_BIN` | path to the `claude` CLI | `~/.local/bin/claude` |
 | `CLAUDE_TIMEOUT` | per-message timeout (seconds) | `300` |
 | `OGMA_MAX_CONCURRENT` | max concurrent Claude runs across chats (raise only on a roomy host) | `1` |
