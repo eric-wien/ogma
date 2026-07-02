@@ -28,17 +28,20 @@ OUT="${OGMA_BACKUP_DIR:-$HOME/ogma-backups}"
 KEEP="${OGMA_BACKUP_KEEP:-14}"
 NOTIFY=0
 ACTION="create"
+HOST="$(hostname -s 2>/dev/null || echo host)"
+ANY_HOST=0
 
 usage() {
   cat <<EOF
 Usage: bin/backup [--out DIR] [--keep N] [--notify]
-       bin/backup --list [--out DIR]
+       bin/backup --list [--out DIR] [--any-host]
 
 Archives all host-local (git-ignored) Ogma files to a timestamped tar.gz.
 
   --out DIR     destination directory (default: \$OGMA_BACKUP_DIR or ~/ogma-backups)
   --keep N      keep only the newest N archives in DIR (default: 14; 0 = keep all)
   --list        list existing archives in DIR and exit
+  --any-host    list/prune archives from every host, not just '$HOST'
   --notify      post a one-line result to Telegram (used by the timer)
   -h, --help    this help
 
@@ -48,10 +51,11 @@ EOF
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --out)    OUT="${2:?--out needs a directory}"; shift 2 ;;
-    --keep)   KEEP="${2:?--keep needs a number}"; shift 2 ;;
-    --notify) NOTIFY=1; shift ;;
-    --list)   ACTION="list"; shift ;;
+    --out)      OUT="${2:?--out needs a directory}"; shift 2 ;;
+    --keep)     KEEP="${2:?--keep needs a number}"; shift 2 ;;
+    --notify)   NOTIFY=1; shift ;;
+    --list)     ACTION="list"; shift ;;
+    --any-host) ANY_HOST=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) err "unknown argument: $1"; usage; exit 2 ;;
   esac
@@ -59,19 +63,23 @@ done
 
 if ! [[ "$KEEP" =~ ^[0-9]+$ ]]; then err "--keep must be a non-negative integer"; exit 2; fi
 
-# Sorted by name; our timestamped names sort chronologically.
+# Sorted by name; our timestamped names sort chronologically. Scoped to THIS host's
+# archives unless --any-host: in a shared backup dir (sync/NAS), listing and — worse —
+# retention pruning must never touch another machine's backups.
 list_archives() {
   shopt -s nullglob
-  local a=("$OUT"/ogma-backup-*.tar.gz)
-  printf '%s\n' "${a[@]}" | sort
+  local a
+  if [ "$ANY_HOST" = 1 ]; then a=("$OUT"/ogma-backup-*.tar.gz)
+  else a=("$OUT"/ogma-backup-"$HOST"-*.tar.gz); fi
+  (( ${#a[@]} )) && printf '%s\n' "${a[@]}" | sort
 }
 
 if [ "$ACTION" = "list" ]; then
-  shopt -s nullglob
-  files=("$OUT"/ogma-backup-*.tar.gz)
-  if (( ${#files[@]} == 0 )); then say "No backups in $OUT"; exit 0; fi
-  say "${c_bold}Backups in $OUT (${#files[@]}):${c_rst}"
-  for f in $(list_archives); do
+  mapfile -t files < <(list_archives)
+  scope="$([ "$ANY_HOST" = 1 ] && echo "any host" || echo "host $HOST")"
+  if (( ${#files[@]} == 0 )); then say "No backups in $OUT ($scope; try --any-host)"; exit 0; fi
+  say "${c_bold}Backups in $OUT ($scope, ${#files[@]}):${c_rst}"
+  for f in "${files[@]}"; do
     printf '  %s  %s\n' "$(du -h "$f" 2>/dev/null | cut -f1)" "$(basename "$f")"
   done
   exit 0
@@ -117,22 +125,28 @@ count="$(grep -zc '' "$mf" 2>/dev/null || echo '?')"
 
 # --- Create the archive ----------------------------------------------------------------
 mkdir -p "$OUT" || { err "cannot create $OUT"; exit 1; }
-host="$(hostname -s 2>/dev/null || echo host)"
+# Sweep partials left by an interrupted/killed earlier run (never counted by
+# retention or restore — *.partial doesn't match the *.tar.gz globs).
+rm -f "$OUT"/ogma-backup-*.partial 2>/dev/null
 ts="$(date +%Y%m%d-%H%M%S)"
-archive="$OUT/ogma-backup-${host}-${ts}.tar.gz"
+archive="$OUT/ogma-backup-${HOST}-${ts}.tar.gz"
 # Never clobber an existing archive (two backups in the same second — e.g. restore's
 # safety snapshot — would otherwise collide on the second-resolution timestamp).
-n=2; while [ -e "$archive" ]; do archive="$OUT/ogma-backup-${host}-${ts}-${n}.tar.gz"; ((n++)); done
+n=2; while [ -e "$archive" ]; do archive="$OUT/ogma-backup-${HOST}-${ts}-${n}.tar.gz"; ((n++)); done
 
-if tar -C "$OGMA_DIR" --null -czf "$archive" -T "$mf" 2>/dev/null; then
-  chmod 600 "$archive" 2>/dev/null || true   # contains .env — keep it private
+# Write to a .partial and rename only on success: a crash, power loss, or the
+# gateway's command timeout killing us mid-tar must not leave a truncated archive
+# where retention or restore-newest would pick it up.
+if tar -C "$OGMA_DIR" --null -czf "$archive.partial" -T "$mf" 2>/dev/null; then
+  chmod 600 "$archive.partial" 2>/dev/null || true   # contains .env — keep it private
+  mv "$archive.partial" "$archive" || { err "could not finalize $archive"; exit 1; }
   size="$(du -h "$archive" 2>/dev/null | cut -f1)"
   ok "Backed up $count file(s) → $archive ($size)"
   result="🗄️ Ogma backup OK — ${count} files, ${size:-?} → $(basename "$archive")"
 else
   err "tar failed — archive not written."
-  [ "$NOTIFY" = 1 ] && printf '⚠️ Ogma backup FAILED on %s (tar error).' "$host" | "$OGMA_DIR/bin/tg-send" 2>/dev/null
-  rm -f "$archive" 2>/dev/null
+  [ "$NOTIFY" = 1 ] && printf '⚠️ Ogma backup FAILED on %s (tar error).' "$HOST" | "$OGMA_DIR/bin/tg-send" 2>/dev/null
+  rm -f "$archive.partial" 2>/dev/null
   exit 1
 fi
 

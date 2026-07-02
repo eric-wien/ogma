@@ -28,17 +28,21 @@ err()  { printf '%s  ✗ %s%s\n' "$c_red" "$*" "$c_rst" >&2; }
 ask()  { local p="$1" d="${2:-}" a; if [ -n "$d" ]; then read -r -p "$p [$d]: " a || true; printf '%s' "${a:-$d}"; else read -r -p "$p: " a || true; printf '%s' "$a"; fi; }
 
 OUT="${OGMA_BACKUP_DIR:-$HOME/ogma-backups}"
-ARCHIVE=""; ASSUME_YES=0; SAFETY=1; DRYRUN=0; DO_LIST=0
+ARCHIVE=""; ASSUME_YES=0; SAFETY=1; DRYRUN=0; DO_LIST=0; ANY_HOST=0
+HOST="$(hostname -s 2>/dev/null || echo host)"
 
 usage() {
   cat <<EOF
 Usage: bin/restore [ARCHIVE] [options]
 
 Applies a host-local backup into this Ogma checkout ($OGMA_DIR).
-With no ARCHIVE, restores the NEWEST archive in \$OGMA_BACKUP_DIR (~/ogma-backups).
+With no ARCHIVE, restores this host's ('$HOST') NEWEST archive from
+\$OGMA_BACKUP_DIR (~/ogma-backups); if this host has none (e.g. a fresh box),
+it falls back to the newest archive from any host and says so.
 
   ARCHIVE          path to a specific ogma-backup-*.tar.gz to restore
   --from DIR       directory to pick the newest archive from (default: ~/ogma-backups)
+  --any-host       pick the newest archive regardless of which host made it
   --list           list available archives and exit
   --dry-run        show what would be extracted, change nothing
   --no-backup      skip the safety snapshot of current host-local files
@@ -53,6 +57,7 @@ EOF
 while [ $# -gt 0 ]; do
   case "$1" in
     --from)      OUT="${2:?--from needs a directory}"; shift 2 ;;
+    --any-host)  ANY_HOST=1; shift ;;
     --list)      DO_LIST=1; shift ;;
     --dry-run)   DRYRUN=1; shift ;;
     --no-backup) SAFETY=0; shift ;;
@@ -63,15 +68,27 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ "$DO_LIST" = 1 ]; then exec "$OGMA_DIR/bin/backup" --list --out "$OUT"; fi
+if [ "$DO_LIST" = 1 ]; then
+  if [ "$ANY_HOST" = 1 ]; then exec "$OGMA_DIR/bin/backup" --list --out "$OUT" --any-host
+  else exec "$OGMA_DIR/bin/backup" --list --out "$OUT"; fi
+fi
 
 # --- Resolve which archive to restore ----------------------------------------
+# Prefer THIS host's archives: in a shared backup dir the newest file overall may
+# be another machine's — silently restoring its .env/bot token here would be wrong.
+# A fresh box with no own archives (the documented migration case) falls through
+# to any host, with a warning to check the name before confirming.
 if [ -z "$ARCHIVE" ]; then
   shopt -s nullglob
-  cands=("$OUT"/ogma-backup-*.tar.gz)
+  if [ "$ANY_HOST" = 1 ]; then cands=("$OUT"/ogma-backup-*.tar.gz)
+  else cands=("$OUT"/ogma-backup-"$HOST"-*.tar.gz); fi
+  if (( ${#cands[@]} == 0 )) && [ "$ANY_HOST" != 1 ]; then
+    cands=("$OUT"/ogma-backup-*.tar.gz)
+    (( ${#cands[@]} )) && warn "no archives for host '$HOST' — using the newest from another host; check the name below."
+  fi
   if (( ${#cands[@]} == 0 )); then err "no archives found in $OUT (use ARCHIVE or --from DIR)."; exit 1; fi
   # Pick the most recently modified — robust regardless of filename scheme.
-  ARCHIVE="$(ls -t "$OUT"/ogma-backup-*.tar.gz 2>/dev/null | head -1)"
+  ARCHIVE="$(ls -t "${cands[@]}" 2>/dev/null | head -1)"
 fi
 [ -f "$ARCHIVE" ] || { err "archive not found: $ARCHIVE"; exit 1; }
 if ! tar tzf "$ARCHIVE" >/dev/null 2>&1; then err "not a readable .tar.gz: $ARCHIVE"; exit 1; fi

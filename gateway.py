@@ -28,15 +28,26 @@ BASE = Path(__file__).resolve().parent
 
 
 def load_env(path: Path) -> None:
-    """Tiny .env loader (KEY=VALUE, ignores blanks/#comments). No deps."""
+    """Tiny .env loader (KEY=VALUE, ignores blanks/#comments). No deps.
+
+    Real environment variables win over the file. Duplicate keys in the file
+    resolve last-wins, and one pair of surrounding quotes is stripped — the
+    same two rules as bin/_env.sh, keep them in sync.
+    """
     if not path.exists():
         return
+    vals: dict[str, str] = {}
     for line in path.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, val = line.partition("=")
-        os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
+        val = val.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+            val = val[1:-1]
+        vals[key.strip()] = val
+    for key, val in vals.items():
+        os.environ.setdefault(key, val)
 
 
 load_env(BASE / ".env")
@@ -74,6 +85,8 @@ MAX_CONCURRENT = max(1, int(cfg("MAX_CONCURRENT", "1") or "1"))
 
 _inflight: set = set()                       # chat_ids with a message currently being handled
 _inflight_lock = threading.Lock()
+DENY_COOLDOWN = 600                          # seconds between replies to a non-allowed chat
+_denied: dict[str, float] = {}               # chat_id -> when we last answered its denial
 _sessions_lock = threading.Lock()            # guards the shared sessions dict + file
 _run_sem = threading.Semaphore(MAX_CONCURRENT)  # bounds concurrent `claude` invocations
 
@@ -98,7 +111,11 @@ def load_sessions() -> dict[str, str]:
 
 
 def save_sessions(s: dict[str, str]) -> None:
-    SESSIONS_FILE.write_text(json.dumps(s, indent=2))
+    # Atomic replace — a crash mid-write must not corrupt the file (a corrupt
+    # sessions.json silently drops every chat's session on the next start).
+    tmp = SESSIONS_FILE.with_name(SESSIONS_FILE.name + ".tmp")
+    tmp.write_text(json.dumps(s, indent=2))
+    tmp.replace(SESSIONS_FILE)
 
 
 def set_env_var(key: str, value: str) -> None:
@@ -137,6 +154,11 @@ def tg(method: str, params: dict, timeout: int = 60) -> dict:
         return json.loads(r.read().decode())
 
 
+def _tg_len(s: str) -> int:
+    """Telegram's 4096 limit counts UTF-16 code units — emoji count double."""
+    return len(s.encode("utf-16-le")) // 2
+
+
 def send(chat_id: str, text: str) -> None:
     # Split long replies on line/space boundaries.
     while text:
@@ -145,11 +167,18 @@ def send(chat_id: str, text: str) -> None:
             cut = max(chunk.rfind("\n"), chunk.rfind(" "))
             if cut > TG_MAX // 2:
                 text, chunk = chunk[cut:] + text, chunk[:cut]
-        try:
-            tg("sendMessage", {"chat_id": chat_id, "text": chunk})
-        except Exception as e:  # noqa: BLE001
-            log("sendMessage failed:", e)
-            return
+        while _tg_len(chunk) > TG_MAX:
+            text, chunk = chunk[-200:] + text, chunk[:-200]
+        for attempt in (1, 2):  # one retry — a silently dropped reply looks like a dead bot
+            try:
+                tg("sendMessage", {"chat_id": chat_id, "text": chunk})
+                break
+            except Exception as e:  # noqa: BLE001
+                if attempt == 2:
+                    log("sendMessage failed (giving up):", e)
+                    return
+                log("sendMessage failed (retrying):", e)
+                time.sleep(2)
 
 
 def typing(chat_id: str) -> None:
@@ -196,13 +225,20 @@ def ask_claude(prompt: str, session_id: str | None) -> tuple[str, str | None]:
         return ("⏱️ That took too long and timed out. Try a smaller ask?", session_id)
     if proc.returncode != 0:
         log("claude exited", proc.returncode, proc.stderr[:500])
-        # A bad/expired session id is the common cause — retry once fresh.
-        if session_id:
+        # Retry fresh ONLY when the resume itself failed (the CLI says "No conversation
+        # found with session ID: …"). A blanket retry would silently drop the chat's
+        # context whenever a transient error cleared on the second attempt.
+        if session_id and "no conversation found" in (proc.stderr or "").lower():
+            log("stale session id — retrying with a fresh session")
             return ask_claude(prompt, None)
         # Surface the actual reason (e.g. unknown model / bad flag) instead of a bare code.
         hint = next((ln.strip() for ln in (proc.stderr or "").splitlines() if ln.strip()), "")
         msg = f"⚠️ Claude error (exit {proc.returncode})."
-        return (f"{msg} {hint[:200]}".rstrip() if hint else msg, session_id)
+        if hint:
+            msg = f"{msg} {hint[:200]}".rstrip()
+        if session_id:
+            msg += " (Your session is kept — if this persists, /new starts fresh.)"
+        return (msg, session_id)
     try:
         out = json.loads(proc.stdout)
     except json.JSONDecodeError:
@@ -310,16 +346,39 @@ def build_help() -> str:
     return f"{CORE_HELP}\n\nThis host:\n{lines}"
 
 
-def run_ogmactl(chat_id: str, argv: list[str]) -> None:
+# Commands that legitimately run long get their own limit; everything else 60s.
+# On expiry subprocess.run KILLS the child, so the message must say so.
+CMD_TIMEOUTS: dict[str, int] = {"/backup": 300}
+
+
+def run_ogmactl(chat_id: str, argv: list[str], timeout: int = 60) -> None:
     """Invoke ogmactl with a whitelisted subcommand + positional args; relay output."""
     typing(chat_id)
     try:
         proc = subprocess.run([OGMACTL, *argv], cwd=str(BASE),
-                              capture_output=True, text=True, timeout=60)
+                              capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        send(chat_id, "⏱️ Command timed out.")
+        send(chat_id, f"⏱️ Command killed after {timeout}s — it may have stopped mid-run.")
         return
     send(chat_id, (proc.stdout or proc.stderr or "").strip() or "(no output)")
+
+
+def script_busy(script: str) -> bool:
+    """True if bin/<script> currently holds its state/<script>.lock flock.
+
+    briefing/dream run detached and each is a full claude invocation — without this
+    check a repeated /briefing would stack concurrent runs outside _run_sem's limit.
+    """
+    lock = BASE / "state" / f"{script}.lock"
+    if not lock.exists():
+        return False
+    try:
+        probe = subprocess.run(["flock", "-n", str(lock), "true"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=5)
+        return probe.returncode != 0
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def launch_detached(script: str) -> bool:
@@ -456,16 +515,22 @@ def handle(chat_id: str, text: str, sessions: dict[str, str]) -> None:
     if cmd in OGMACTL_CMDS:
         if cmd == "/restart":
             send(chat_id, "♻️ Restarting the gateway…")
-        run_ogmactl(chat_id, OGMACTL_CMDS[cmd] + arg.split())
+        run_ogmactl(chat_id, OGMACTL_CMDS[cmd] + arg.split(), CMD_TIMEOUTS.get(cmd, 60))
         return
 
     # Script-backed commands that deliver their own output, run detached.
     if cmd == "/briefing":
+        if script_busy("briefing"):
+            send(chat_id, "🗞️ A briefing is already being generated — hang tight.")
+            return
         ok = launch_detached("briefing")
         send(chat_id, "🗞️ Putting your briefing together — it'll arrive shortly."
                       if ok else "⚠️ briefing script not found.")
         return
     if cmd == "/dream":
+        if script_busy("dream"):
+            send(chat_id, "🌙 A consolidation pass is already running.")
+            return
         ok = launch_detached("dream")
         send(chat_id, "🌙 Consolidating memory in the background (no output expected)."
                       if ok else "⚠️ dream script not found.")
@@ -560,9 +625,18 @@ def main() -> None:
             chat_id = str(msg["chat"]["id"])
             text = msg["text"]
             if chat_id not in ALLOWED:
-                log("denied chat", chat_id)
-                send(chat_id, f"⛔ Not authorized. Your chat ID is `{chat_id}` — "
-                              "add it to TELEGRAM_ALLOWED_USERS to enable access.")
+                # Reply (and log) at most once per cooldown per chat — anyone who finds
+                # the bot can message it, and answering every attempt is free spam
+                # amplification plus a log flood. First contact still gets the chat-ID
+                # hint, which bin/setup's authorization flow relies on.
+                now = time.time()
+                if now - _denied.get(chat_id, 0.0) >= DENY_COOLDOWN:
+                    if len(_denied) > 1000:  # strangers must not grow this unbounded
+                        _denied.clear()
+                    _denied[chat_id] = now
+                    log("denied chat", chat_id)
+                    send(chat_id, f"⛔ Not authorized. Your chat ID is `{chat_id}` — "
+                                  "add it to TELEGRAM_ALLOWED_USERS to enable access.")
                 continue
             log(f"[{chat_id}] {text[:80]}")
             # Concurrency guard: one in-flight message per chat. Drop a second one

@@ -12,7 +12,7 @@ Defaults to 24h ago. Output is plain text on stdout, grouped by source.
 FEEDS are configurable via the OGMA_RSS_FEEDS environment variable, a
 comma-separated list of `Label|url` pairs, e.g.:
 
-    OGMA_RSS_FEEDS="BBC World|http://feeds.bbci.co.uk/news/world/rss.xml,Guardian World|https://www.theguardian.com/world/rss"
+    OGMA_RSS_FEEDS="BBC World|https://feeds.bbci.co.uk/news/world/rss.xml,Guardian World|https://www.theguardian.com/world/rss"
 
 If unset, a small set of generic English world-news feeds is used. Edit these to
 your own sources (and language) — the briefing's tone/language is set in bin/briefing.
@@ -31,8 +31,10 @@ from email.utils import parsedate_to_datetime
 from xml.etree import ElementTree as ET
 
 # Generic defaults — override with OGMA_RSS_FEEDS (see module docstring).
+# https only — feed text ends up inside the briefing prompt, so don't hand a
+# network MITM a plaintext channel into the LLM.
 DEFAULT_FEEDS = [
-    ("BBC World",      "http://feeds.bbci.co.uk/news/world/rss.xml"),
+    ("BBC World",      "https://feeds.bbci.co.uk/news/world/rss.xml"),
     ("Guardian World", "https://www.theguardian.com/world/rss"),
     ("NPR News",       "https://feeds.npr.org/1001/rss.xml"),
 ]
@@ -43,15 +45,18 @@ def _feeds_from_env_file():
     environment (so the setting works whether news-fetch is run by bin/briefing,
     by systemd, or directly by hand)."""
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+    val = ""
     try:
         with open(path) as f:
-            for line in f:
+            for line in f:  # duplicate keys: last wins (same rule as bin/_env.sh)
                 line = line.strip()
                 if line.startswith("OGMA_RSS_FEEDS="):
-                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+                    val = line.split("=", 1)[1].strip()
+                    if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+                        val = val[1:-1]
     except OSError:
         pass
-    return ""
+    return val
 
 
 def load_feeds():

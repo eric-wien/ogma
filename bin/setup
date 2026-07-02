@@ -55,7 +55,8 @@ do_check() {
   printf '  fallback  : %s\n' "$(grep -E '^OGMA_FALLBACK_MODEL=' "$ENV" 2>/dev/null | cut -d= -f2- | sed 's/^$/(none)/')"
   [ -x "$cb" ] && ok "claude CLI: $cb" || { err "claude CLI missing ($cb)"; problems=1; }
   if [ -n "$tok" ] && command -v curl >/dev/null; then
-    u="$(curl -sS -m 12 "https://api.telegram.org/bot${tok}/getMe" 2>/dev/null | "$PY" -c 'import sys,json
+    # Token goes to curl via --config on a private fd, not argv (world-readable in /proc).
+    u="$(curl -sS -m 12 --config <(printf 'url = "https://api.telegram.org/bot%s/getMe"\n' "$tok") 2>/dev/null | "$PY" -c 'import sys,json
 try: d=json.load(sys.stdin)
 except Exception: print("?"); raise SystemExit
 print(("OK "+((d.get("result") or {}).get("username") or "?")) if d.get("ok") else "BAD")' 2>/dev/null)"
@@ -191,8 +192,10 @@ step "Model & reasoning effort"
 # Live model list needs an API key; Claude Code subscription auth can't list models,
 # so this is best-effort — otherwise use the curated aliases (or type any full id).
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  # The API key goes to curl via --config on a private fd, not argv.
   live="$(curl -sS -m 12 https://api.anthropic.com/v1/models \
-            -H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01" 2>/dev/null \
+            --config <(printf 'header = "x-api-key: %s"\n' "$ANTHROPIC_API_KEY") \
+            -H "anthropic-version: 2023-06-01" 2>/dev/null \
           | "$PY" -c '
 import sys, json
 try:
@@ -309,7 +312,22 @@ if yes "Install skills into ~/.claude/skills/?" "y"; then
   mkdir -p "$HOME/.claude/skills"
   for s in tickets session-search daily-briefing; do
     dest="$HOME/.claude/skills/$s"
-    if [ -e "$dest" ]; then warn "$s already present — skipped."; else cp -r "$OGMA_DIR/skills/$s" "$dest"; ok "installed $s"; fi
+    src="$OGMA_DIR/skills/$s"
+    if [ -L "$dest" ]; then
+      ok "$s is a symlink — already tracks the repo."
+    elif [ -e "$dest" ]; then
+      # Copies go stale after a `git pull`; offer the repo version, but never
+      # clobber a locally customised skill without asking.
+      if diff -rq "$src" "$dest" >/dev/null 2>&1; then
+        ok "$s up to date."
+      elif yes "  $s differs from the repo version — overwrite with the repo copy?" "n"; then
+        rm -rf "$dest" && cp -r "$src" "$dest" && ok "updated $s"
+      else
+        warn "$s left as-is (kept your local version)."
+      fi
+    else
+      cp -r "$src" "$dest"; ok "installed $s"
+    fi
   done
   say "${c_dim}(Tip: symlink instead — ln -s $OGMA_DIR/skills/<name> ~/.claude/skills/<name> — to track repo updates.)${c_rst}"
 else
@@ -336,7 +354,7 @@ if want systemd && [ "$HAVE_SYSTEMD" = 1 ]; then
     if yes "Enable linger (keep services running when you're logged out)?" "y"; then
       loginctl enable-linger "$USER" 2>/dev/null && ok "Linger enabled." || warn "Could not enable linger (may need: sudo loginctl enable-linger $USER)."
     fi
-    say "${c_dim}Optional routines: systemctl --user enable --now ogma-briefing.timer ogma-dream.timer ogma-health.timer ogma-backup.timer${c_rst}"
+    say "${c_dim}Optional routines: systemctl --user enable --now ogma-briefing.timer ogma-dream.timer ogma-health.timer ogma-backup.timer ogma-logtrim.timer${c_rst}"
   else
     warn "Skipped. Templates are in systemd/ — install them manually later (see README)."
   fi

@@ -5,6 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+UMask=0077
 ExecStart={{OGMA_DIR}}/bin/briefing
 StandardOutput=append:{{OGMA_DIR}}/briefing.log
 StandardError=append:{{OGMA_DIR}}/briefing.log

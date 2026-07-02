@@ -1,0 +1,6 @@
+[Unit]
+Description=Ogma log trim (cap the append-only gateway/dream/briefing logs)
+
+[Service]
+Type=oneshot
+ExecStart={{OGMA_DIR}}/bin/logtrim

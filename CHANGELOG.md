@@ -4,6 +4,60 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] — 2026-07-02
+
+One release for the rest of the 2026-07-01 code-review findings.
+
+### Security
+- **Background memory passes no longer get home-wide write access.** The persist-nudge Stop hook
+  and the nightly dream ran `--permission-mode acceptEdits` from `cwd=$HOME`, auto-approving
+  writes anywhere under the home directory while consuming transcript content they didn't author.
+  Both now use path-scoped `Edit(<memory-dir>/**)` / `Write(<memory-dir>/**)` allow rules instead
+  (verified headlessly: in-scope writes succeed, outside writes are blocked). The persist pass's
+  `--add-dir` is also narrowed to the reviewed transcript's project dir.
+- **Secrets/tmp hygiene:** the bot token (tg-send, setup) and `ANTHROPIC_API_KEY` (setup) now go
+  to curl via `--config` on a private fd instead of argv (world-readable in `/proc` while curl
+  runs); the dream's result file and the health-check cooldown marker moved from predictable
+  `/tmp` paths into `state/` (in world-writable /tmp any local user could squat the lock and
+  permanently mute health alerts); service logs are now created 0600 via `UMask=0077` (the
+  gateway log carries chat content); the default BBC feed is https.
+
+### Fixed
+- **A transient `claude` error no longer wipes the chat's context.** The gateway retried every
+  nonzero exit with a fresh session; if the retry succeeded, the new session id silently replaced
+  the old one. It now retries fresh only when the CLI actually reports "No conversation found
+  with session ID", keeps the session otherwise, and says so in the error reply.
+- **`/briefing` and `/dream` can no longer stack concurrent Claude runs.** Each detached script
+  now takes a `state/<name>.lock` flock (covers the bot, the timer, and manual runs at once) and
+  the gateway refuses with a notice while a run is in progress — previously repeated commands
+  spawned unbounded parallel `claude` processes outside the `OGMA_MAX_CONCURRENT` limit.
+- **Backups are written atomically.** `bin/backup` tars to `<archive>.partial` and renames on
+  success, so a crash, power loss, or the bot's command timeout can't leave a truncated archive
+  for retention/restore to trip over; stale partials are swept. The bot's `/backup` also gets a
+  300s timeout (was killed at the generic 60s) and timeouts now say the command was killed.
+
+### Added
+- **Log rotation:** new `bin/logtrim` + `ogma-logtrim.timer` (daily) cap the append-only
+  gateway/dream/briefing logs at 5 MiB, keeping the newest 1 MiB (`OGMA_LOG_MAX`/`OGMA_LOG_KEEP`
+  to tune). Install after pulling: `bin/setup --reconfigure systemd`, then
+  `systemctl --user enable --now ogma-logtrim.timer`.
+- **`--any-host` for `bin/backup --list` / `bin/restore`.** In a shared backup dir, listing and
+  retention pruning now only touch THIS host's archives, and restore prefers this host's newest
+  (falling back to any host, with a warning, on a fresh box) — previously prune could delete
+  another machine's backups and restore could silently apply another machine's `.env`.
+
+### Changed
+- **One `.env` parser everywhere.** New `bin/_env.sh` (`env_get`) is sourced by
+  ogmactl/briefing/dream/tg-send, and `gateway.py`/`news-fetch` follow the same rules: duplicate
+  keys resolve last-wins, one pair of surrounding quotes is stripped. Previously
+  `OGMA_MODEL="…"` worked in the gateway but broke the briefing/dream `--model` call.
+- Gateway resilience: replies to non-allowed chats are throttled (once per 10 min per chat —
+  the first still includes the chat-ID hint setup relies on); `sessions.json` is written
+  atomically; long replies are chunked by UTF-16 length (Telegram's actual limit) and a failed
+  send is retried once; `ogma-gateway.service` gains `StartLimitIntervalSec/Burst` so a config
+  error can't restart-loop every 5s forever; skills re-runs in `bin/setup` now offer to update
+  stale copies after a `git pull` instead of always skipping.
+
 ## [1.2.2] — 2026-07-01
 
 ### Security

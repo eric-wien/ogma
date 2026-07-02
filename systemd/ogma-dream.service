@@ -5,6 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+UMask=0077
 ExecStart={{OGMA_DIR}}/bin/dream
 StandardOutput=append:{{OGMA_DIR}}/dream.log
 StandardError=append:{{OGMA_DIR}}/dream.log

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# logtrim — cap Ogma's append-only logs so they can never fill the disk.
+#
+# The systemd units log via StandardOutput=append:, which never rotates. This
+# trims each ogma log in place (copytruncate-style) once it exceeds OGMA_LOG_MAX
+# bytes, keeping the newest OGMA_LOG_KEEP bytes. In-place is safe with the
+# writers' O_APPEND fds — no service restart needed; at worst a few lines
+# written during the trim are lost, acceptable for diagnostics.
+#
+# Run by ogma-logtrim.timer (daily) or by hand.
+set -uo pipefail
+
+BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MAX="${OGMA_LOG_MAX:-5242880}"     # trim when larger than this (5 MiB)
+KEEP="${OGMA_LOG_KEEP:-1048576}"   # keep this many newest bytes (1 MiB)
+
+shopt -s nullglob
+for log in "$BASE"/*.log; do
+  size="$(stat -c %s "$log" 2>/dev/null || echo 0)"
+  (( size > MAX )) || continue
+  tmp="$(mktemp "${TMPDIR:-/tmp}/ogma-logtrim.XXXXXX")" || continue
+  # Keep whole lines: drop the first (probably partial) line of the tail window.
+  if tail -c "$KEEP" "$log" | sed '1d' > "$tmp"; then
+    cat "$tmp" > "$log"
+    echo "$(date '+%F %T') logtrim: trimmed $(basename "$log") from ${size} to $(stat -c %s "$log" 2>/dev/null || echo '?') bytes" >> "$log"
+  fi
+  rm -f "$tmp"
+done

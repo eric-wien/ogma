@@ -2,6 +2,10 @@
 Description=Ogma Telegram gateway (Claude Code personal assistant)
 After=network-online.target
 Wants=network-online.target
+# A config error (missing token/CLI) exits immediately; without this guard
+# Restart=on-failure loops every 5s forever, flooding the log.
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -13,7 +17,8 @@ Restart=on-failure
 RestartSec=5
 # Make sure the claude binary's dir is on PATH for the service
 Environment=PATH={{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin
-# Hardening
+# Hardening. UMask keeps the appended log 600 — it carries chat content.
+UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 

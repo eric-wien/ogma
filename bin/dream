@@ -12,6 +12,19 @@ export OGMA_PERSIST_PASS=1   # belt-and-suspenders: never trigger the gateway pe
 
 BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV="$BASE/.env"
+STATE="$BASE/state"
+mkdir -p "$STATE" && chmod 700 "$STATE" 2>/dev/null
+OUT_JSON="$STATE/dream-out.json"
+
+# Single instance: the nightly timer, a bot-triggered /dream, and a manual run all
+# contend on this lock — concurrent passes would race on the memory dir (and several
+# claude processes at once can OOM a small box). The gateway checks the same lock.
+exec 9>"$STATE/dream.lock"
+if ! flock -n 9; then
+  echo "$(date '+%F %T') dream: another run holds the lock — exiting"
+  exit 0
+fi
+
 # Claude Code's per-project memory lives under ~/.claude/projects/<cwd-with-slashes-as-dashes>/.
 # We run AS $HOME, so derive that project dir from $HOME (e.g. /home/bob -> -home-bob).
 PROJ="$(printf '%s' "$HOME" | sed 's#/#-#g')"
@@ -23,10 +36,9 @@ YDAY_MAX=3000
 # (the gateway hook is under workspace/), and OGMA_PERSIST_PASS guards anyway.
 cd "$HOME" || exit 1
 
-# Read a config value (OGMA_<name>) from .env.
-cfg() {
-  grep -E "^OGMA_${1}=" "$ENV" 2>/dev/null | cut -d= -f2-
-}
+# Shared .env reader (last-wins, quote-stripping — same rules as gateway.py).
+. "$BASE/bin/_env.sh"
+cfg() { env_get "$ENV" "OGMA_$1"; }
 # Default to the explicit standard-context model id, NOT the bare 'sonnet' alias:
 # in headless runs the alias can resolve to the credit-gated 1M-context variant
 # (a large nightly transcript sweep tripped "Usage credits required for 1M context").
@@ -89,12 +101,14 @@ if cp -r "$MEM" "$snap" 2>/dev/null; then
   ls -1dt "$BACKUPS"/*/ 2>/dev/null | tail -n +8 | xargs -r rm -rf
 fi
 
+# Write access is path-scoped to the memory dir — NOT acceptEdits, which from cwd=$HOME
+# would auto-approve writes anywhere under the home directory while this pass consumes
+# transcript content it didn't author. Reads still cover all transcripts via --add-dir.
 claude -p "$PROMPT" \
   --model "$model" \
-  --allowedTools "Read Glob Grep Edit Write" \
-  --permission-mode acceptEdits \
+  --allowedTools "Read Glob Grep Edit($MEM/**) Write($MEM/**)" \
   --add-dir "$HOME/.claude/projects" \
-  --output-format json >/tmp/ogma-dream-out.json 2>/dev/null
+  --output-format json >"$OUT_JSON" 2>/dev/null
 
 # Guarantee the hard cap on yesterday.md regardless of what the model wrote.
 if [ -f "$YESTERDAY" ] && [ "$(wc -c < "$YESTERDAY")" -gt "$YDAY_MAX" ]; then
@@ -102,7 +116,7 @@ if [ -f "$YESTERDAY" ] && [ "$(wc -c < "$YESTERDAY")" -gt "$YDAY_MAX" ]; then
   echo "$(date '+%F %T') dream: truncated yesterday.md to ${YDAY_MAX}c"
 fi
 
-result="$(python3 -c 'import sys,json; print(json.load(open("/tmp/ogma-dream-out.json")).get("subtype","?"))' 2>/dev/null)"
+result="$(python3 -c "import json; print(json.load(open('$OUT_JSON')).get('subtype','?'))" 2>/dev/null)"
 ysize="$( [ -f "$YESTERDAY" ] && wc -c < "$YESTERDAY" || echo 0 )"
 midx="$( [ -f "$MEM/MEMORY.md" ] && wc -c < "$MEM/MEMORY.md" || echo 0 )"
 done_ts="$(date '+%F %T')"

@@ -24,10 +24,10 @@ usage() {
   [ -x "$LOCAL" ] && "$LOCAL" help 2>/dev/null
 }
 
-# Read a config value (OGMA_<name>) from .env.
-cfg() {
-  grep -E "^OGMA_${1}=" "$ENV" 2>/dev/null | cut -d= -f2-
-}
+# Read a config value (OGMA_<name>) from .env via the shared parser
+# (last-wins, quote-stripping — same rules as gateway.py).
+. "$BASE/bin/_env.sh"
+cfg() { env_get "$ENV" "OGMA_$1"; }
 
 cmd="${1:-}"
 case "$cmd" in
@@ -35,7 +35,7 @@ case "$cmd" in
     echo "service : $(systemctl --user is-active "$SVC" 2>/dev/null || echo unknown)"
     up="$(systemctl --user show "$SVC" -p ActiveEnterTimestamp --value 2>/dev/null)"
     echo "since   : ${up:-?}"
-    echo "model   : $(cfg MODEL || echo default)"
+    m="$(cfg MODEL)"; echo "model   : ${m:-default}"
     ;;
   logs)
     # Accept both `logs [N]` (gateway, back-compat) and `logs <source> [N]`.

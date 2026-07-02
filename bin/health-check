@@ -13,7 +13,11 @@
 set -uo pipefail
 
 BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOCK="/tmp/ogma-health-alerted"
+BASE="$(cd "$BIN/.." && pwd)"
+# The cooldown marker lives in state/ (operator-private), not world-writable /tmp,
+# where any local user could pre-create it and permanently mute the alerts.
+LOCK="${HEALTH_LOCK:-$BASE/state/health-alerted}"
+mkdir -p "$(dirname "$LOCK")" 2>/dev/null
 COOLDOWN="${HEALTH_COOLDOWN:-1800}"          # 30 min between repeat alerts
 
 TEMP_MAX="${HEALTH_TEMP_MAX:-75}"            # °C

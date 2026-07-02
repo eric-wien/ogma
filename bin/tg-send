@@ -6,8 +6,9 @@ set -uo pipefail
 
 BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV="$BASE/.env"
-tok="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV" | cut -d= -f2-)"
-users="$(grep -E '^TELEGRAM_ALLOWED_USERS=' "$ENV" | cut -d= -f2- | tr ',' ' ')"
+. "$BASE/bin/_env.sh"
+tok="$(env_get "$ENV" TELEGRAM_BOT_TOKEN)"
+users="$(env_get "$ENV" TELEGRAM_ALLOWED_USERS | tr ',' ' ')"
 [ -n "$tok" ]   || { echo "tg-send: no TELEGRAM_BOT_TOKEN in .env" >&2; exit 1; }
 [ -n "$users" ] || { echo "tg-send: no TELEGRAM_ALLOWED_USERS in .env" >&2; exit 1; }
 
@@ -17,7 +18,9 @@ msg="${msg:0:4000}"   # stay under Telegram's 4096-char limit
 
 rc=0
 for chat in $users; do
-  curl -sS -m 20 "https://api.telegram.org/bot${tok}/sendMessage" \
+  # The URL carries the bot token, so it goes to curl via --config on a private fd
+  # instead of the command line (argv is world-readable in /proc while curl runs).
+  curl -sS -m 20 --config <(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$tok") \
     --data-urlencode "chat_id=${chat}" \
     --data-urlencode "text=${msg}" >/dev/null || rc=1
 done

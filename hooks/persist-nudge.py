@@ -14,6 +14,8 @@ project (~/.claude/projects/<home>/memory). From the workspace cwd that dir belo
 acceptEdits. Running as $HOME — exactly what bin/dream does — makes it this project's own
 auto-memory, so writes go through. Because we can't --resume the workspace session from here,
 we hand the pass the conversation's transcript file (from the hook payload) to review instead.
+Writes are path-scoped to the memory dir (Edit/Write allow rules), not blanket acceptEdits —
+this pass reads untrusted transcript content and must not be able to write elsewhere in $HOME.
 
 Announcing: the user asked to be told when a memory is actually written. The pass is otherwise
 silent (detached, stdout discarded), so the ONLY channel back is bin/tg-send — the prompt has it
@@ -102,15 +104,18 @@ def main() -> None:
         pass
 
     # Run AS $HOME so the shared home-project memory is THIS project's own auto-memory (writing
-    # into another project's .claude data is blocked as "sensitive"). acceptEdits + an explicit
-    # tool whitelist (incl. just bin/tg-send for the announce) keep the headless write unblocked.
+    # into another project's .claude data is blocked as "sensitive"). Write access is granted via
+    # path-scoped Edit/Write rules limited to the memory dir — NOT acceptEdits, which from cwd=$HOME
+    # would auto-approve writes anywhere under the home directory while this pass consumes
+    # untrusted transcript content. --add-dir covers only the reviewed transcript's project.
     home = str(Path.home())
+    mem_scope = MEMORY_DIR.rstrip("/") + "/**"
     cmd = [
         CLAUDE_BIN, "-p", build_nudge(transcript),
         "--output-format", "json",
-        "--permission-mode", "acceptEdits",
-        "--allowedTools", "Read", "Glob", "Grep", "Edit", "Write", f"Bash({TG_SEND}:*)",
-        "--add-dir", PROJECTS_DIR,
+        "--allowedTools", "Read", "Glob", "Grep",
+        f"Edit({mem_scope})", f"Write({mem_scope})", f"Bash({TG_SEND}:*)",
+        "--add-dir", str(Path(transcript).parent),
     ]
     env = {**os.environ, "OGMA_PERSIST_PASS": "1"}
     try:
