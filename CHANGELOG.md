@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
-## [2.0.0] — unreleased (feature/optional-llm)
+## [2.0.0] — 2026-07-02
 
 **The repositioning release** (all four phases of docs/roadmap.md): Ogma's core
 is now the secure remote command runner — chat-driven execution of commands
