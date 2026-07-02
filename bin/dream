@@ -39,6 +39,16 @@ cd "$HOME" || exit 1
 # Shared .env reader (last-wins, quote-stripping — same rules as gateway.py).
 . "$BASE/bin/_env.sh"
 cfg() { env_get "$ENV" "OGMA_$1"; }
+
+# Assistant layer only: the consolidation pass is a full claude run. On a
+# command-only install (OGMA_LLM=off) or without the claude CLI there is no
+# memory being written — exit 0 quietly so a still-enabled timer doesn't fail.
+llm="${OGMA_LLM:-$(cfg LLM)}"   # real env wins over .env — same rule as the gateway
+if [ "${llm:-claude}" = "off" ] || ! command -v claude >/dev/null 2>&1; then
+  echo "$(date '+%F %T') dream: assistant layer off (OGMA_LLM=off or no claude CLI) — skipping"
+  exit 0
+fi
+
 # Default to the explicit standard-context model id, NOT the bare 'sonnet' alias:
 # in headless runs the alias can resolve to the credit-gated 1M-context variant
 # (a large nightly transcript sweep tripped "Usage credits required for 1M context").

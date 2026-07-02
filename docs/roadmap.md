@@ -39,8 +39,8 @@ or disabled.
 ## Phase 2 — Harden the command runner into the actual product
 
 *Status: **shipped** on `feature/optional-llm` (2026-07-02) — confirm, validation,
-audit log, guest role, file output, and the group sender check. Still open: the
-"write your own ogmactl.local subcommand" tutorial in docs/.*
+audit log, guest role, file output, the group sender check, and the extension
+tutorial (`docs/extending.md`).*
 
 Features the LLM used to paper over, now first-class:
 
@@ -74,6 +74,12 @@ menu registration) behind a small transport interface: `poll() → messages`,
 of a rewrite. Cut the seam first; build the Signal backend later.
 
 ## Phase 4 — Reclassify the assistant features
+
+*Status: **shipped** on `feature/optional-llm` (2026-07-02): three-tier split
+documented in the README; bin/briefing and bin/dream guard themselves
+(OGMA_LLM=off or no claude CLI → clean no-op) and bin/setup skips their
+systemd units on command-only installs. Persona/skills/overlays were already
+gated by Phase 1's setup changes.*
 
 `briefing`, `dream`, `search`, persona, and the memory-persist hook belong to
 the optional LLM layer. The twofold system and ticketing stay. End state,

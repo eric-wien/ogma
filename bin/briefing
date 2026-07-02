@@ -34,6 +34,15 @@ fi
 . "$BIN/_env.sh"
 cfg() { env_get "$ENV" "OGMA_$1"; }
 
+# Assistant layer only: a briefing is a full claude run. On a command-only
+# install (OGMA_LLM=off) or without the claude CLI there is nothing to run —
+# exit 0 quietly so a still-enabled timer doesn't fail every morning.
+llm="${OGMA_LLM:-$(cfg LLM)}"   # real env wins over .env — same rule as the gateway
+if [ "${llm:-claude}" = "off" ] || ! command -v claude >/dev/null 2>&1; then
+  echo "$(date '+%F %T') briefing: assistant layer off (OGMA_LLM=off or no claude CLI) — skipping" >&2
+  exit 0
+fi
+
 # Explicit standard-context id, not the bare 'sonnet' alias — the alias can
 # resolve to the credit-gated 1M-context variant in headless runs. Keep in sync
 # with bin/setup and bin/dream.

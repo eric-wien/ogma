@@ -14,18 +14,29 @@ One always-on Python process (stdlib only) long-polls Telegram. No inbound ports
 no API key plumbing — the optional LLM layer reuses your existing Claude Code auth on the box, and
 without it there is no Claude dependency at all (`OGMA_LLM=off`).
 
+Ogma is three tiers — each optional layer sits on the one below and can be left off:
+
 ```
-gateway.py               the bridge (Telegram long-poll <-> `claude -p`)
-workspace/               Claude's working dir; workspace/CLAUDE.md is the assistant persona
-workspace/.claude/       gateway-scoped settings (the memory-persist Stop hook)
-hooks/persist-nudge.py   the out-of-band "remember durable facts" pass (Stop hook)
-bin/                     setup (guided installer) + ogmactl (self-management) + routines (briefing/dream/health)
-skills/                  reusable procedures (tickets, session-search, daily-briefing) → ~/.claude/skills/
-tickets/                 the bot↔interactive-session bridge (see docs/workflow.md)
-systemd/                 unit templates for always-on operation
-docs/workflow.md         how the whole thing is designed — start here
-.env.example             config template
+CORE — the command runner (stdlib only, no Claude anywhere)
+  gateway.py               allow-list/roles, /confirm, arg validation, audit, dispatch
+  transport_telegram.py    all Telegram specifics behind a small seam (Signal-ready)
+  bin/ogmactl              the ONLY executable the bot can run (whitelisted subcommands)
+  bin/ogmactl.local        + config/commands.local.json — YOUR commands (docs/extending.md)
+  bin/setup|backup|restore|health-check|logtrim|tg-send, systemd/, tickets/
+
+LLM LAYER (optional; OGMA_LLM=claude) — free-text chat
+  llm_claude.py            headless `claude -p` runs, per-chat resumable sessions
+
+ASSISTANT LAYER (optional; needs the LLM layer) — the personal-assistant extras
+  workspace/CLAUDE.md      persona (+ gitignored host overlays)
+  hooks/persist-nudge.py   memory-persist Stop hook
+  bin/briefing|dream       morning briefing / nightly memory consolidation
+  skills/                  tickets, session-search, daily-briefing → ~/.claude/skills/
 ```
+
+`docs/workflow.md` explains how the tiers are meant to be used together;
+`docs/extending.md` is the tutorial for adding your own commands (core tier, no fork);
+`docs/roadmap.md` is where this is heading. `.env.example` documents every setting.
 
 ## How it works (read this)
 Ogma has **two surfaces, one brain, bridged by tickets**: an always-on but deliberately *restricted*
@@ -39,9 +50,9 @@ The command runner works entirely without the LLM: set `OGMA_LLM=off` (or simply
 `claude` CLI) and the gateway runs your whitelisted `ogmactl` commands and nothing else — free text
 gets a polite refusal, and the LLM commands (`/new`, `/model`, `/briefing`, `/search`, …) disappear
 from the menu. This is the core of Ogma: a chat-driven remote terminal restricted to commands **you**
-predefined. Add your own via `bin/ogmactl.local` + `config/commands.local.json` (see
-[Self-management](#self-management-ogmactl)) — no LLM, no fork, no gateway edits. The direction from
-here is sketched in **[docs/roadmap.md](docs/roadmap.md)**.
+predefined. Add your own via `bin/ogmactl.local` + `config/commands.local.json` — no LLM, no fork,
+no gateway edits: **[docs/extending.md](docs/extending.md)** is the step-by-step tutorial. The
+direction from here is sketched in **[docs/roadmap.md](docs/roadmap.md)**.
 
 > **Self-host model.** Ogma is meant to be run by you, on your own always-on machine, talking to
 > your own Telegram bot, using your own Claude Code auth. There is no hosted service and nothing

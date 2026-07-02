@@ -37,6 +37,17 @@ secure remote command runner; Claude Code becomes an optional assistant layer.
   chats, not just the chat id — allow-listing a group no longer hands the
   command runner to every member.
 
+### Added (Phase 4 — the three-tier split)
+- The README now maps the repo as **core** (command runner, stdlib only) /
+  **LLM layer** (`OGMA_LLM=claude`) / **assistant layer** (persona, memory,
+  briefing, dream, skills), and `docs/extending.md` is a step-by-step tutorial
+  for adding your own commands to the core tier without forking.
+- `bin/briefing` and `bin/dream` guard themselves: with `OGMA_LLM=off` or no
+  claude CLI they exit 0 with a log line instead of failing — a leftover
+  enabled timer on a command-only install is a no-op, not a nightly error.
+- `bin/setup` skips installing the briefing/dream systemd units on
+  command-only installs and adapts its "optional routines" hint.
+
 ### Changed (Phase 3 — transport seam)
 - All Telegram specifics (long-poll loop, chunked sending + UTF-16 length rule,
   typing indicator, menu registration, document upload) extracted from

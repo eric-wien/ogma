@@ -370,21 +370,33 @@ if want systemd && [ "$HAVE_SYSTEMD" = 1 ]; then
   step "Installing systemd --user services"
   if yes "Install the systemd units now?" "y"; then
     UD="$HOME/.config/systemd/user"; mkdir -p "$UD"
-    sys_skipped=0
+    sys_skipped=0; llm_skipped=0
+    # Command-only installs don't get the assistant-layer units (each run is a
+    # full claude invocation — see bin/briefing / bin/dream, which also guard).
+    llm_now="$(grep -E '^OGMA_LLM=' "$ENV" 2>/dev/null | cut -d= -f2-)"
     for f in "$OGMA_DIR"/systemd/*; do
       base="$(basename "$f")"
       # System units (they pin a User=) can't run under `systemctl --user`.
       # Skip them here; they're installed to /etc/systemd/system (see README).
       if grep -q '{{USER}}' "$f"; then sys_skipped=1; continue; fi
+      case "$base" in
+        ogma-briefing.*|ogma-dream.*)
+          [ "$llm_now" = "off" ] && { llm_skipped=1; continue; } ;;
+      esac
       sed "s|{{OGMA_DIR}}|$OGMA_DIR|g; s|{{HOME}}|$HOME|g" "$f" > "$UD/$base"
     done
     systemctl --user daemon-reload
     ok "Units installed to $UD and daemon reloaded."
     [ "$sys_skipped" = 1 ] && say "${c_dim}Note: system units (e.g. ogma-pihole-watch) were skipped — see README to install them under /etc/systemd/system.${c_rst}"
+    [ "$llm_skipped" = 1 ] && say "${c_dim}Note: assistant-layer units (briefing/dream) were skipped — command-only mode. Re-run setup after enabling the LLM to install them.${c_rst}"
     if yes "Enable linger (keep services running when you're logged out)?" "y"; then
       loginctl enable-linger "$USER" 2>/dev/null && ok "Linger enabled." || warn "Could not enable linger (may need: sudo loginctl enable-linger $USER)."
     fi
-    say "${c_dim}Optional routines: systemctl --user enable --now ogma-briefing.timer ogma-dream.timer ogma-health.timer ogma-backup.timer ogma-logtrim.timer${c_rst}"
+    if [ "$llm_now" = "off" ]; then
+      say "${c_dim}Optional routines: systemctl --user enable --now ogma-health.timer ogma-backup.timer ogma-logtrim.timer${c_rst}"
+    else
+      say "${c_dim}Optional routines: systemctl --user enable --now ogma-briefing.timer ogma-dream.timer ogma-health.timer ogma-backup.timer ogma-logtrim.timer${c_rst}"
+    fi
   else
     warn "Skipped. Templates are in systemd/ — install them manually later (see README)."
   fi
