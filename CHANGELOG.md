@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.0.1] — 2026-07-02
+
+### Changed
+- **README rewritten for clarity** — same content, stricter structure: what it
+  is → how it works → security → setup → daily use → maintenance. Duplicated
+  self-host notes and scattered doc pointers consolidated into a single
+  "Where to find things" documentation map; the systemd `User=` warning moved
+  to the systemd step. No information removed.
+
 ## [2.0.0] — 2026-07-02
 
 **The repositioning release** (all four phases of docs/roadmap.md): Ogma's core
