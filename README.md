@@ -160,7 +160,7 @@ Always available (the command runner — deterministic, no LLM call):
 - your own host-local commands from `config/commands.local.json` — with optional per-argument
   regex validation (`"validate"`), a guest flag, and `"confirm": true` for anything destructive
 - `/confirm` / `/cancel` — protected commands (core: `/restart`) arm instead of firing and run
-  only after `/confirm` within 60s
+  only after `/confirm` within the confirm window (default 180s, `OGMA_CONFIRM_TTL`)
 - `/help` — usage
 - every executed command is recorded in the append-only audit log (`state/audit.log`, JSON
   lines: who, what, exit code, duration) — view it with `/logs audit`
@@ -180,6 +180,7 @@ Only with the LLM layer (`OGMA_LLM=claude`, the default when the `claude` CLI is
 | `TELEGRAM_ALLOWED_USERS` | comma-separated allowed chat IDs (**required**; full/admin access) | — |
 | `TELEGRAM_GUEST_USERS` | chat IDs with read-only access: `/status`, `/health`, local commands marked `"guest": true` — no LLM | — |
 | `OGMA_LLM` | `claude` = assistant layer on; `off` = command-only mode (no LLM) | `claude` if the CLI exists |
+| `OGMA_CONFIRM_TTL` | seconds a /confirm-protected command stays armed (min 30) | `180` |
 | `CLAUDE_BIN` | path to the `claude` CLI | `~/.local/bin/claude` |
 | `CLAUDE_TIMEOUT` | per-message timeout (seconds) | `300` |
 | `OGMA_MAX_CONCURRENT` | max concurrent Claude runs across chats (raise only on a roomy host) | `1` |

@@ -12,7 +12,9 @@ secure remote command runner; Claude Code becomes an optional assistant layer.
 ### Added (Phase 2 — hardened command runner)
 - **/confirm for protected commands.** `"confirm": true` on a local command (and
   core `/restart`) arms the command instead of running it; it fires only on
-  /confirm within 60s, /cancel disarms. Typos can no longer restart the gateway.
+  /confirm within the confirm window (default 180s, `OGMA_CONFIRM_TTL`; 60s
+  proved too tight for phone-paced replies), /cancel disarms. Typos can no
+  longer restart the gateway.
 - **Per-argument validation.** `"validate": [regex, ...]` + `"min_args"` on a
   local command are checked by the gateway before anything executes; a broken
   pattern disables the command (fails closed).

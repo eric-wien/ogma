@@ -82,7 +82,9 @@ _inflight_lock = threading.Lock()
 DENY_COOLDOWN = 600                          # seconds between replies to a non-allowed sender
 _denied: dict[str, float] = {}               # sender -> when we last answered its denial
 
-CONFIRM_TTL = 60                             # seconds a /confirm-protected command stays armed
+# How long a /confirm-protected command stays armed. Human-paced: the prompt has
+# to reach a phone and the reply travel back — 60s proved too tight in practice.
+CONFIRM_TTL = max(30, int(cfg("CONFIRM_TTL", "180") or "180"))
 _pending_confirm: dict[str, tuple[float, str, list[str]]] = {}  # chat -> (expiry, cmd, argv)
 _confirm_lock = threading.Lock()
 
