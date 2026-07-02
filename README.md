@@ -247,7 +247,7 @@ Only with the LLM layer (`OGMA_LLM=claude`, the default when the `claude` CLI is
 
 `bin/ogmactl` is the **only** shell command the bot is permitted to run (a fixed whitelist of
 subcommands — granting it does *not* grant arbitrary shell): `status`, `logs [N]`, `restart`,
-`health`, `backup`, `ticket <text>`, `tickets`. `bin/setup` pre-approves it (and read access to
+`health`, `backup`, `ticket <text>`, `tickets`, `ticket-close <id> [reason]`. `bin/setup` pre-approves it (and read access to
 your memory directory) in `workspace/.claude/settings.json`, so the bot can self-manage and
 recall memory over Telegram without hitting permission prompts — the headless gateway can't show
 an approval UI. This grant is read-only by design: no `Write`/`Edit`/arbitrary-`Bash`.

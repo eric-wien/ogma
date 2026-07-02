@@ -45,6 +45,10 @@ That writes a markdown file into `tickets/`. Later, in a full interactive sessio
 tools, append a `## Resolution`, mark it `done`, and move it to `tickets/done/`. If the fix taught
 the system something — a new `ogmactl` subcommand, a relaxed permission — that knowledge stays.
 
+Tickets that turn out obsolete don't need a full session: `ogmactl ticket-close <id> [reason]`
+(from the CLI or via the bot) stamps a resolution and moves the file to `tickets/done/` — e.g.
+`ogmactl ticket-close 20260101-120000 "wont-do: superseded"`.
+
 Net effect: the bot stays safe and honest ("I can't do that here, but I filed a ticket"), and
 nothing falls through the cracks.
 

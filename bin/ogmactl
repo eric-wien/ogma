@@ -17,7 +17,7 @@ TICKETS="$BASE/tickets"
 LOCAL="$BASE/bin/ogmactl.local"
 
 usage() {
-  echo "ogmactl: allowed commands — status | logs [source] [N] | restart | health | backup | remember [--type T] <text> | set-persona <field> [value] | ticket <text> | tickets"
+  echo "ogmactl: allowed commands — status | logs [source] [N] | restart | health | backup | remember [--type T] <text> | set-persona <field> [value] | ticket <text> | tickets | ticket-close <id> [reason]"
   echo "          log sources: gateway (default), dream, briefing, audit"
   echo "          remember types: user | feedback | project (default) | reference"
   echo "          set-persona fields: name | style | language | show | clear"
@@ -184,6 +184,30 @@ case "$cmd" in
       echo "$body"
     } > "$f"
     echo "🎫 Ticket $id filed. Pick it up in an interactive session."
+    ;;
+  ticket-close)
+    # Close a ticket without an interactive session (ticket 20260702-144552):
+    # stamp a Resolution, flip the status, move it to tickets/done/ — the same
+    # shape an interactive session leaves behind, so the two paths stay uniform.
+    # Reason is free text; lead with a verdict like done / wont-do / duplicate.
+    shift
+    id="${1:-}"; shift 2>/dev/null || true
+    reason="$*"
+    [[ "$id" =~ ^[0-9]{8}-[0-9]{6}$ ]] || { echo "usage: ogmactl ticket-close <id> [reason]"; exit 2; }
+    f="$TICKETS/$id.md"
+    if [ ! -f "$f" ]; then
+      [ -f "$TICKETS/done/$id.md" ] && { echo "Ticket $id is already closed."; exit 0; }
+      echo "No open ticket $id."; exit 1
+    fi
+    mkdir -p "$TICKETS/done"
+    sed -i 's/^status: open$/status: closed/' "$f"
+    {
+      echo
+      echo "## Resolution"
+      echo "Closed via \`ogmactl ticket-close\` on $(date '+%F %T %Z')${reason:+ — $reason}."
+    } >> "$f"
+    mv "$f" "$TICKETS/done/$id.md"
+    echo "✅ Ticket $id closed${reason:+ — $reason}."
     ;;
   tickets)
     shopt -s nullglob

@@ -67,6 +67,9 @@ full interactive session:
 - `ogmactl ticket "<clear description>"` — write a self-contained description: what they want, what
   you tried, and what's needed. Then tell them it's filed.
 - `ogmactl tickets` — list the open tickets.
+- `ogmactl ticket-close <id> [reason]` — close a ticket that's obsolete, a duplicate, or
+  won't-do (lead the reason with a verdict, e.g. "wont-do: superseded by X"). Confirm with
+  the user before closing; never close a ticket that still needs the work done.
 
 Don't pretend you did something you couldn't. Filing a ticket is the right, honest move.
 
