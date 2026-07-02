@@ -295,6 +295,15 @@ so the shared persona stays generic while this host's specifics live here (gitig
 - Beyond the core subcommands, this host may define extra \`ogmactl\` commands. To see the
   current list, run \`$OGMA_DIR/bin/ogmactl help\`.
 EOF
+# If the operator keeps a reference doc for their host-local commands, point the
+# persona at it so the bot can answer "how does command X work" questions.
+if [ -f "$OGMA_DIR/docs/commands.local.md" ]; then
+cat >> "$OGMA_DIR/workspace/CLAUDE.local.md" <<EOF
+- Reference for those host-local commands (usage, arguments, gotchas):
+  \`$OGMA_DIR/docs/commands.local.md\` — read it when asked how a command works
+  or what options exist.
+EOF
+fi
 # Append the persona-override block (name/style/language) into the same overlay,
 # rendered from the OGMA_PERSONA_* values just written to .env. Shared with
 # `ogmactl set-persona` so both write the block identically.

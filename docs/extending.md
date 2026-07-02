@@ -118,6 +118,13 @@ use guests — that a guest chat can't see or run what it shouldn't.
 Everything executed lands in `state/audit.log` (JSON lines: actor, argv, exit
 code, duration) — `/logs audit` shows it over chat.
 
+## Optional: document your commands for the bot
+
+If you keep a reference for your host-local commands in
+`docs/commands.local.md` (gitignored — usage, arguments, gotchas, one short
+section per command), `bin/setup` will point the persona at it, and Ogma will
+consult it when someone asks how a command works or what options exist.
+
 ## What NOT to do
 
 - Don't edit `gateway.py`, `bin/ogmactl`, or other tracked files for a
