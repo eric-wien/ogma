@@ -95,17 +95,25 @@ class TelegramTransport:
         """Long-poll getUpdates forever, yielding one dict per text message.
 
         chat_id is where to reply; from_id is who wrote it (differs from chat_id
-        in groups — the gateway authorizes on the sender there). Transport errors
-        are logged and retried here; the gateway never sees them.
+        in groups — the gateway authorizes on the sender there); date is Telegram's
+        server-side send timestamp (unix), which lets the gateway measure delivery
+        lag and judge time-sensitive replies (/confirm) by when the user actually
+        sent them. Transport errors are logged and retried here; the gateway never
+        sees them.
+
+        The poll window is deliberately short-ish (25s server / 35s client): when a
+        long-poll connection dies silently (flaky uplink, NAT timeout), incoming
+        messages queue server-side until the client times out and re-polls — the
+        window is the worst-case delivery lag, so keep it tolerable.
         """
         offset = 0
         while True:
             try:
-                resp = self._call("getUpdates", {"offset": offset, "timeout": 50},
-                                  timeout=70)
+                resp = self._call("getUpdates", {"offset": offset, "timeout": 25},
+                                  timeout=35)
             except Exception as e:  # noqa: BLE001
                 log("getUpdates error:", e)
-                time.sleep(5)
+                time.sleep(3)
                 continue
             for upd in resp.get("result", []):
                 offset = upd["update_id"] + 1
@@ -116,6 +124,7 @@ class TelegramTransport:
                     "chat_id": str(msg["chat"]["id"]),
                     "from_id": str((msg.get("from") or {}).get("id") or ""),
                     "text": msg["text"],
+                    "date": int(msg.get("date") or 0),
                 }
 
     # -----------------------------------------------------------------------

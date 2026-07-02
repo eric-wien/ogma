@@ -428,7 +428,8 @@ def launch_detached(script: str) -> bool:
     return True
 
 
-def handle(chat_id: str, actor: str, text: str, guest: bool) -> None:
+def handle(chat_id: str, actor: str, text: str, guest: bool,
+           sent_ts: float = 0.0) -> None:
     stripped = text.strip()
     parts = stripped.split(maxsplit=1)
     cmd = parts[0].lower() if parts else ""
@@ -448,7 +449,10 @@ def handle(chat_id: str, actor: str, text: str, guest: bool) -> None:
             send(chat_id, "Nothing awaiting confirmation.")
             return
         expiry, pcmd, pargv = pending
-        if time.time() > expiry:
+        # Judge by when the user SENT /confirm (transport's server timestamp),
+        # not when it finally reached us — delivery lag on a flaky uplink must
+        # not burn the confirmation window.
+        if (sent_ts or time.time()) > expiry:
             audit("confirm-expired", actor, pcmd)
             send(chat_id, f"⌛ {pcmd} expired unconfirmed — send it again if you still want it.")
             return
@@ -548,13 +552,13 @@ def handle(chat_id: str, actor: str, text: str, guest: bool) -> None:
     send(chat_id, reply)
 
 
-def _worker(chat_id: str, actor: str, text: str, guest: bool) -> None:
+def _worker(chat_id: str, actor: str, text: str, guest: bool, sent_ts: float) -> None:
     """Handle one message in its own thread, then release the per-chat slot."""
     # Log completion + duration: the receipt line alone can't distinguish "still
     # running", "killed mid-flight", and "reply delayed by a Telegram stall".
     t0 = time.monotonic()
     try:
-        handle(chat_id, actor, text, guest)
+        handle(chat_id, actor, text, guest, sent_ts)
     except Exception as e:  # noqa: BLE001
         log("handler error:", e)
         send(chat_id, "⚠️ Something broke handling that. Logged it.")
@@ -602,7 +606,13 @@ def main() -> None:
                 send(chat_id, f"⛔ Not authorized. Your ID is `{actor}` — "
                               "add it to TELEGRAM_ALLOWED_USERS to enable access.")
             continue
-        log(f"[{chat_id}] {text[:80]}")
+        # Surface inbound delivery lag (send time is Telegram's server clock):
+        # a message that sat queued behind a dead long-poll looks like a slow
+        # bot otherwise. Small offsets are clock noise, only log real lag.
+        sent_ts = float(upd.get("date") or 0)
+        lag = (time.time() - sent_ts) if sent_ts else 0.0
+        log(f"[{chat_id}] {text[:80]}"
+            + (f" (sent {lag:.0f}s ago)" if lag > 5 else ""))
         # Concurrency guard: one in-flight message per chat. Drop a second one
         # (with a notice) rather than overlapping runs. Handle in a thread so a
         # long run in one chat doesn't block polling or other chats.
@@ -614,7 +624,7 @@ def main() -> None:
             send(chat_id, "⏳ Still working on your previous message — give me a moment, "
                           "then resend if needed.")
             continue
-        threading.Thread(target=_worker, args=(chat_id, actor, text, guest),
+        threading.Thread(target=_worker, args=(chat_id, actor, text, guest, sent_ts),
                          daemon=True).start()
 
 

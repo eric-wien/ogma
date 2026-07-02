@@ -27,6 +27,12 @@ secure remote command runner; Claude Code becomes an optional assistant layer.
   free text. Admin list (`TELEGRAM_ALLOWED_USERS`) is unchanged.
 - **Long output arrives as a file** instead of a flood of 4000-char chunks
   (threshold ~8k chars), with a chunked-send fallback if the upload fails.
+- **Delivery-lag handling.** Telegram's server-side send timestamp now flows
+  through the transport: the receipt log shows real inbound lag
+  (`(sent 58s ago)`), /confirm is judged by when the user *sent* it rather
+  than when a flaky uplink finally delivered it, and the long-poll window is
+  shortened (25s/35s) so a silently dead poll can't sit on incoming messages
+  for 75 seconds.
 - **Group hardening:** authorization now checks the message *sender* in group
   chats, not just the chat id — allow-listing a group no longer hands the
   command runner to every member.
