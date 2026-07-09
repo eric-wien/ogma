@@ -125,7 +125,7 @@ fi
 
 if [ ! -s "$mf" ]; then
   warn "no host-local files found to back up — nothing to do."
-  [ "$NOTIFY" = 1 ] && printf '🗄️ Ogma backup: nothing to archive (no host-local files).' | "$OGMA_DIR/bin/tg-send" 2>/dev/null
+  [ "$NOTIFY" = 1 ] && printf '🗄️ Ogma backup: nothing to archive (no host-local files).' | "$OGMA_DIR/bin/notify" 2>/dev/null
   exit 0
 fi
 
@@ -143,7 +143,7 @@ if [ "$FORCE" = 0 ] && [ -n "$fingerprint" ] \
    && [ "$(cat "$state_file" 2>/dev/null)" = "$fingerprint" ] \
    && [ -n "$(list_archives | tail -n 1)" ]; then
   ok "No changes since last backup ($count files) — skipping. Use --force to archive anyway."
-  [ "$NOTIFY" = 1 ] && printf '🗄️ Ogma backup: no changes since last run — skipped.' | "$OGMA_DIR/bin/tg-send" 2>/dev/null
+  [ "$NOTIFY" = 1 ] && printf '🗄️ Ogma backup: no changes since last run — skipped.' | "$OGMA_DIR/bin/notify" 2>/dev/null
   exit 0
 fi
 
@@ -170,7 +170,7 @@ if tar -C "$OGMA_DIR" --null -czf "$archive.partial" -T "$mf" 2>/dev/null; then
   printf '%s\n' "$fingerprint" > "$state_file" 2>/dev/null || warn "could not record backup state in $OUT"
 else
   err "tar failed — archive not written."
-  [ "$NOTIFY" = 1 ] && printf '⚠️ Ogma backup FAILED on %s (tar error).' "$HOST" | "$OGMA_DIR/bin/tg-send" 2>/dev/null
+  [ "$NOTIFY" = 1 ] && printf '⚠️ Ogma backup FAILED on %s (tar error).' "$HOST" | "$OGMA_DIR/bin/notify" 2>/dev/null
   rm -f "$archive.partial" 2>/dev/null
   exit 1
 fi
@@ -184,5 +184,5 @@ if (( KEEP > 0 )); then
   fi
 fi
 
-[ "$NOTIFY" = 1 ] && printf '%s' "$result" | "$OGMA_DIR/bin/tg-send" 2>/dev/null
+[ "$NOTIFY" = 1 ] && printf '%s' "$result" | "$OGMA_DIR/bin/notify" 2>/dev/null
 exit 0

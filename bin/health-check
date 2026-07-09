@@ -3,7 +3,7 @@
 #
 # Reads CPU temp, 1-min load, disk usage on /, and available RAM directly from
 # the kernel. If any threshold is crossed it sends ONE Telegram alert via
-# tg-send, then suppresses repeats for COOLDOWN seconds via a lockfile. A clean
+# bin/notify, then suppresses repeats for COOLDOWN seconds via a lockfile. A clean
 # (healthy) check clears the lock, so a fresh breach alerts immediately.
 #
 # Runs every ~5 min from ogma-health.timer (systemd --user). No Claude in the
@@ -64,8 +64,8 @@ fi
 host="$(hostname)"
 msg="$(printf '⚠️ Ogma health alert on %s:\n%s' "$host" "$(printf '%s\n' "${alerts[@]}")")"
 
-if "$BIN/tg-send" "$msg"; then
+if "$BIN/notify" "$msg"; then
   touch "$LOCK"
 else
-  echo "health-check: tg-send failed" >&2
+  echo "health-check: notify failed" >&2
 fi

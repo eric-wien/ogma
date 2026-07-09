@@ -112,7 +112,7 @@ say "This configures your own copy. Nothing is sent anywhere; secrets you enter 
 step "Checking prerequisites"
 command -v "$PY" >/dev/null || { err "python3 not found — install it first."; exit 1; }
 ok "python3: $($PY --version 2>&1)"
-command -v curl >/dev/null && ok "curl present" || warn "curl not found — Telegram delivery (tg-send/briefing) needs it."
+command -v curl >/dev/null && ok "curl present" || warn "curl not found — message delivery (notify/briefing) needs it."
 CLAUDE_BIN="$(command -v claude || true)"; [ -n "$CLAUDE_BIN" ] || CLAUDE_BIN="$HOME/.local/bin/claude"
 if [ -x "$CLAUDE_BIN" ]; then ok "claude CLI: $CLAUDE_BIN"; else warn "claude CLI not found at $CLAUDE_BIN — that's fine for command-only mode; install Claude Code (or set CLAUDE_BIN in .env) to enable the assistant layer."; fi
 HAVE_SYSTEMD=0; if command -v systemctl >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then HAVE_SYSTEMD=1; ok "systemd --user available"; else warn "systemd --user not available — you'll run the gateway manually."; fi

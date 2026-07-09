@@ -42,7 +42,7 @@ CORE — the command runner (stdlib only, no Claude anywhere)
   transport_matrix.py      the same seam speaking Matrix (self-hosted homeserver)
   bin/ogmactl              the ONLY executable the bot can run (whitelisted subcommands)
   bin/ogmactl.local        + config/commands.local.json — YOUR commands (docs/extending.md)
-  bin/setup|backup|restore|health-check|logtrim|tg-send, systemd/, tickets/
+  bin/setup|backup|restore|health-check|logtrim|notify, systemd/, tickets/
 
 LLM LAYER (optional; OGMA_LLM=claude) — free-text chat
   llm_claude.py            headless `claude -p` runs, per-chat resumable sessions

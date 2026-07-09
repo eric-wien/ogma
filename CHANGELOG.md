@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.3.0] — 2026-07-09
+
+### Added
+- **`bin/notify` — transport-aware notifications.** Scheduled routines (backup,
+  health-check, briefing, security checks, watchers) used to push alerts through
+  `bin/tg-send`, which always spoke Telegram — after switching the gateway to
+  `OGMA_TRANSPORT=matrix` they would keep posting to a channel nobody watches.
+  `bin/notify` dispatches on the same `OGMA_TRANSPORT`/credential config as the
+  gateway (real env > `.env` > `config/matrix_bot.env.local`); the matrix
+  backend posts to `MATRIX_NOTIFY_ROOM` (new setting — the bot must be a member).
+  Access tokens travel to curl via `--config` on a private fd, never argv.
+  `bin/tg-send` remains as a deprecated shim (`exec notify "$@"`) so host-local
+  callers keep working; all in-repo callers now use notify.
+
 ## [2.2.0] — 2026-07-09
 
 ### Added

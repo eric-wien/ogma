@@ -106,7 +106,7 @@ out="$(claude -p "$prompt" \
 
 if [ -z "$out" ]; then
   echo "$(date '+%F %T') briefing FAILED to generate" >&2
-  [ "${BRIEFING_DRYRUN:-0}" = 1 ] || "$BIN/tg-send" "⚠️ Morning briefing failed to generate ($(date '+%H:%M'))."
+  [ "${BRIEFING_DRYRUN:-0}" = 1 ] || "$BIN/notify" "⚠️ Morning briefing failed to generate ($(date '+%H:%M'))."
   exit 1
 fi
 
@@ -118,6 +118,6 @@ if [ "${BRIEFING_DRYRUN:-0}" = 1 ]; then
   exit 0
 fi
 
-if "$BIN/tg-send" "$out"; then
+if "$BIN/notify" "$out"; then
   echo "$now" > "$LAST"     # only advance the window after a successful send
 fi

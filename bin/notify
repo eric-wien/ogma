@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# notify — push a message to the owner over the ACTIVE Ogma transport.
+# Reusable delivery for any scheduled routine. Message comes from $1 or stdin.
+# Dispatches on OGMA_TRANSPORT (telegram is the default) and reads the same
+# files as the gateway: .env, plus config/matrix_bot.env.local for matrix.
+# bin/tg-send is a back-compat shim over this — new callers use notify.
+set -uo pipefail
+
+BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV="$BASE/.env"
+MATRIX_ENV="$BASE/config/matrix_bot.env.local"
+. "$BASE/bin/_env.sh"
+
+# cfg <KEY> — real environment wins, then .env, then the matrix creds file:
+# the same precedence gateway.py's load_env() produces.
+cfg() {
+  local v="${!1-}"
+  [ -n "$v" ] || v="$(env_get "$ENV" "$1")"
+  [ -n "$v" ] || v="$(env_get "$MATRIX_ENV" "$1")"
+  printf '%s' "$v"
+}
+
+msg="${1:-$(cat)}"
+[ -n "$msg" ] || { echo "notify: empty message" >&2; exit 1; }
+msg="${msg:0:4000}"   # both backends cap a single message around this size
+
+transport="$(cfg OGMA_TRANSPORT)"
+case "${transport:-telegram}" in
+
+  telegram)
+    tok="$(cfg TELEGRAM_BOT_TOKEN)"
+    users="$(cfg TELEGRAM_ALLOWED_USERS | tr ',' ' ')"
+    [ -n "$tok" ]   || { echo "notify: no TELEGRAM_BOT_TOKEN in .env" >&2; exit 1; }
+    [ -n "$users" ] || { echo "notify: no TELEGRAM_ALLOWED_USERS in .env" >&2; exit 1; }
+    rc=0
+    for chat in $users; do
+      # The URL carries the bot token, so it goes to curl via --config on a
+      # private fd instead of the command line (argv is world-readable in
+      # /proc while curl runs).
+      curl -sS -m 20 --config <(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$tok") \
+        --data-urlencode "chat_id=${chat}" \
+        --data-urlencode "text=${msg}" >/dev/null || rc=1
+    done
+    exit $rc
+    ;;
+
+  matrix)
+    hs="$(cfg MATRIX_HOMESERVER)"
+    tok="$(cfg MATRIX_ACCESS_TOKEN)"
+    room="$(cfg MATRIX_NOTIFY_ROOM)"
+    [ -n "$hs" ] && [ -n "$tok" ] || {
+      echo "notify: MATRIX_HOMESERVER/MATRIX_ACCESS_TOKEN not set" >&2; exit 1; }
+    [ -n "$room" ] || {
+      echo "notify: MATRIX_NOTIFY_ROOM not set — the room id scheduled" \
+           "notifications go to (the bot must be a member)" >&2; exit 1; }
+    room_q="$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$room")"
+    body="$(printf '%s' "$msg" | python3 -c 'import sys,json;print(json.dumps({"msgtype":"m.text","body":sys.stdin.read()}))')"
+    # Same /proc-argv rule as above: the access token travels in a header, so
+    # the header line goes to curl via --config on a private fd.
+    curl -sS -m 20 -X PUT \
+      --config <(printf 'header = "Authorization: Bearer %s"\n' "$tok") \
+      -H 'Content-Type: application/json' --data-binary "$body" \
+      "${hs%/}/_matrix/client/v3/rooms/${room_q}/send/m.room.message/notify$(date +%s%N)" \
+      >/dev/null
+    ;;
+
+  *)
+    # An unknown transport is a misconfiguration, not a reason to guess where
+    # an alert should go.
+    echo "notify: unknown OGMA_TRANSPORT '${transport}' (use 'telegram' or 'matrix')" >&2
+    exit 1
+    ;;
+esac

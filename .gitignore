@@ -50,6 +50,7 @@ bin/*
 !bin/ogmactl
 !bin/restore
 !bin/setup
+!bin/notify
 !bin/tg-send
 !bin/uninstall
 
