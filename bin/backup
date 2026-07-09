@@ -9,6 +9,10 @@
 # Archives land OUTSIDE the repo (default ~/ogma-backups) so they survive `git pull`,
 # a reinstall, and `bin/uninstall`. Run on demand, from the Telegram bot (ogmactl
 # backup), or on a schedule (systemd/ogma-backup.timer).
+#
+# Runs are skipped when nothing changed: a fingerprint of the manifest (path, size,
+# mtime of every file) is kept in the backup dir and compared before archiving.
+# `--force` overrides.
 set -uo pipefail
 
 OGMA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -27,19 +31,22 @@ err()  { printf '%s  ✗ %s%s\n' "$c_red" "$*" "$c_rst" >&2; }
 OUT="${OGMA_BACKUP_DIR:-$HOME/ogma-backups}"
 KEEP="${OGMA_BACKUP_KEEP:-14}"
 NOTIFY=0
+FORCE=0
 ACTION="create"
 HOST="$(hostname -s 2>/dev/null || echo host)"
 ANY_HOST=0
 
 usage() {
   cat <<EOF
-Usage: bin/backup [--out DIR] [--keep N] [--notify]
+Usage: bin/backup [--out DIR] [--keep N] [--notify] [--force]
        bin/backup --list [--out DIR] [--any-host]
 
 Archives all host-local (git-ignored) Ogma files to a timestamped tar.gz.
+Skips the run when nothing changed since the last archive (see --force).
 
   --out DIR     destination directory (default: \$OGMA_BACKUP_DIR or ~/ogma-backups)
   --keep N      keep only the newest N archives in DIR (default: 14; 0 = keep all)
+  --force       archive even if nothing changed since the last backup
   --list        list existing archives in DIR and exit
   --any-host    list/prune archives from every host, not just '$HOST'
   --notify      post a one-line result to Telegram (used by the timer)
@@ -54,6 +61,7 @@ while [ $# -gt 0 ]; do
     --out)      OUT="${2:?--out needs a directory}"; shift 2 ;;
     --keep)     KEEP="${2:?--keep needs a number}"; shift 2 ;;
     --notify)   NOTIFY=1; shift ;;
+    --force)    FORCE=1; shift ;;
     --list)     ACTION="list"; shift ;;
     --any-host) ANY_HOST=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -123,6 +131,22 @@ fi
 
 count="$(grep -zc '' "$mf" 2>/dev/null || echo '?')"
 
+# --- Delta check: skip when nothing changed since the last archive ---------------------
+# Fingerprint = path + size + mtime of every manifest file, hashed. It lives in $OUT,
+# NOT in the repo: a state file inside the manifest set would dirty every next run.
+# Per-host name for the same reason list_archives is host-scoped (shared/synced dirs).
+# Only skip if an archive for this host actually exists — a stale fingerprint must not
+# suppress the first backup after the archives were deleted.
+state_file="$OUT/.ogma-backup-state-$HOST"
+fingerprint="$(cd "$OGMA_DIR" && xargs -0 stat -c '%n %s %Y' < "$mf" 2>/dev/null | sha256sum | cut -d' ' -f1)"
+if [ "$FORCE" = 0 ] && [ -n "$fingerprint" ] \
+   && [ "$(cat "$state_file" 2>/dev/null)" = "$fingerprint" ] \
+   && [ -n "$(list_archives | tail -n 1)" ]; then
+  ok "No changes since last backup ($count files) — skipping. Use --force to archive anyway."
+  [ "$NOTIFY" = 1 ] && printf '🗄️ Ogma backup: no changes since last run — skipped.' | "$OGMA_DIR/bin/tg-send" 2>/dev/null
+  exit 0
+fi
+
 # --- Create the archive ----------------------------------------------------------------
 mkdir -p "$OUT" || { err "cannot create $OUT"; exit 1; }
 # Sweep partials left by an interrupted/killed earlier run (never counted by
@@ -143,6 +167,7 @@ if tar -C "$OGMA_DIR" --null -czf "$archive.partial" -T "$mf" 2>/dev/null; then
   size="$(du -h "$archive" 2>/dev/null | cut -f1)"
   ok "Backed up $count file(s) → $archive ($size)"
   result="🗄️ Ogma backup OK — ${count} files, ${size:-?} → $(basename "$archive")"
+  printf '%s\n' "$fingerprint" > "$state_file" 2>/dev/null || warn "could not record backup state in $OUT"
 else
   err "tar failed — archive not written."
   [ "$NOTIFY" = 1 ] && printf '⚠️ Ogma backup FAILED on %s (tar error).' "$HOST" | "$OGMA_DIR/bin/tg-send" 2>/dev/null
