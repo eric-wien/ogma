@@ -2,15 +2,17 @@
 
 [![CI](https://github.com/eric-wien/ogma/actions/workflows/ci.yml/badge.svg)](https://github.com/eric-wien/ogma/actions/workflows/ci.yml)
 
-A secure remote command runner for your own machine, driven from **Telegram** — with an optional
+A secure remote command runner for your own machine, driven from **Telegram or Matrix** — with an optional
 **Claude Code** assistant layer on top. You define the commands your box exposes (a strict
 whitelist, no shell) and run them from your phone from anywhere. Optionally, free-text chat goes
 to a resumable headless `claude` session: a conversation partner that can perform tasks and
 analyze.
 
-One always-on Python process (stdlib only) long-polls Telegram. No inbound ports, no pip
-installs, no API key plumbing — the optional LLM layer reuses your existing Claude Code auth on
-the box, and without it there is no Claude dependency at all (`OGMA_LLM=off`).
+One always-on Python process (stdlib only) long-polls Telegram — or, with
+`OGMA_TRANSPORT=matrix`, your own Matrix homeserver, keeping the whole channel on infrastructure
+you control. No inbound ports, no pip installs, no API key plumbing — the optional LLM layer
+reuses your existing Claude Code auth on the box, and without it there is no Claude dependency
+at all (`OGMA_LLM=off`).
 
 **Self-host model.** Ogma is meant to be run by you, on your own always-on machine, talking to
 your own Telegram bot, using your own Claude Code auth. There is no hosted service, no shared
@@ -36,7 +38,8 @@ Each optional layer sits on the one below and can be left off:
 ```
 CORE — the command runner (stdlib only, no Claude anywhere)
   gateway.py               allow-list/roles, /confirm, arg validation, audit, dispatch
-  transport_telegram.py    all Telegram specifics behind a small seam (Signal-ready)
+  transport_telegram.py    all Telegram specifics behind a small transport seam
+  transport_matrix.py      the same seam speaking Matrix (self-hosted homeserver)
   bin/ogmactl              the ONLY executable the bot can run (whitelisted subcommands)
   bin/ogmactl.local        + config/commands.local.json — YOUR commands (docs/extending.md)
   bin/setup|backup|restore|health-check|logtrim|tg-send, systemd/, tickets/

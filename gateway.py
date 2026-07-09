@@ -4,8 +4,9 @@ Ogma gateway — a secure remote command runner over chat, with an optional
 Claude Code assistant layer.
 
 One always-on process. Receives messages through a pluggable transport
-(transport_telegram.py today; the surface is small enough that a Signal backend
-is a drop-in later) and, for each message from an allow-listed sender, either
+(transport_telegram.py or transport_matrix.py, selected via OGMA_TRANSPORT;
+the surface is small enough that further backends are drop-ins) and, for each
+message from an allow-listed sender, either
 runs a whitelisted ogmactl command (deterministic, no LLM) or — when the LLM
 layer is enabled (OGMA_LLM=claude, the default when the `claude` binary
 exists) — hands free text to a resumable headless Claude Code session (see
@@ -26,8 +27,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-
-from transport_telegram import TelegramTransport
 
 # ---------------------------------------------------------------------------
 # Config
@@ -70,9 +69,19 @@ def _id_set(var: str) -> set[str]:
     return {x.strip() for x in os.environ.get(var, "").split(",") if x.strip()}
 
 
+# Chat backend: telegram (default) or matrix. The matrix backend keeps its
+# host-local credentials in config/matrix_bot.env.local (default-deny dir +
+# .local naming — doubly gitignored), loaded here so .env stays uncluttered.
+# Allow-lists are per-backend (<BACKEND>_ALLOWED_USERS): the ids live in
+# different namespaces, and a stale list must not carry over on a switch.
+TRANSPORT_KIND = (cfg("TRANSPORT", "telegram").lower() or "telegram")
+if TRANSPORT_KIND == "matrix":
+    load_env(BASE / "config" / "matrix_bot.env.local")
+ID_VAR_PREFIX = "MATRIX" if TRANSPORT_KIND == "matrix" else "TELEGRAM"
+
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-ALLOWED = _id_set("TELEGRAM_ALLOWED_USERS")   # admins: everything
-GUESTS = _id_set("TELEGRAM_GUEST_USERS") - ALLOWED  # read-only command subset
+ALLOWED = _id_set(f"{ID_VAR_PREFIX}_ALLOWED_USERS")   # admins: everything
+GUESTS = _id_set(f"{ID_VAR_PREFIX}_GUEST_USERS") - ALLOWED  # read-only command subset
 CLAUDE_BIN = os.environ.get(
     "CLAUDE_BIN", str(Path.home() / ".local/bin/claude")
 )
@@ -143,9 +152,22 @@ else:
 
 # ---------------------------------------------------------------------------
 # Transport. All chat-protocol specifics live behind this object (see
-# transport_telegram.py for the surface a future Signal backend implements).
+# transport_telegram.py for the surface every backend implements). Imported
+# lazily so only the selected backend's module is loaded.
 # ---------------------------------------------------------------------------
-TRANSPORT = TelegramTransport(TOKEN)
+if TRANSPORT_KIND == "matrix":
+    from transport_matrix import MatrixTransport
+    TRANSPORT = MatrixTransport(
+        os.environ.get("MATRIX_HOMESERVER", "").strip(),
+        os.environ.get("MATRIX_USER_ID", "").strip(),
+        os.environ.get("MATRIX_ACCESS_TOKEN", "").strip(),
+        state_dir=BASE / "state",
+    )
+elif TRANSPORT_KIND == "telegram":
+    from transport_telegram import TelegramTransport
+    TRANSPORT = TelegramTransport(TOKEN)
+else:
+    sys.exit(f"unknown OGMA_TRANSPORT={TRANSPORT_KIND!r} (use 'telegram' or 'matrix')")
 
 
 def send(chat_id: str, text: str) -> None:
@@ -569,24 +591,30 @@ def _worker(chat_id: str, actor: str, text: str, guest: bool, sent_ts: float) ->
 
 
 def main() -> None:
-    if not TOKEN:
+    if TRANSPORT_KIND == "matrix":
+        if not os.environ.get("MATRIX_ACCESS_TOKEN", "").strip():
+            sys.exit("MATRIX_ACCESS_TOKEN is not set — put the bot credentials in "
+                     "config/matrix_bot.env.local or .env (see .env.example).")
+    elif not TOKEN:
         sys.exit("TELEGRAM_BOT_TOKEN is not set (see .env.example).")
     ok_token, info = TRANSPORT.validate()
     if ok_token:
         log(f"token OK — bot @{info}")
         TRANSPORT.register_menu(MENU_COMMANDS)
     else:
-        log(f"⚠️ TOKEN CHECK FAILED ({info}). Fix TELEGRAM_BOT_TOKEN in .env and restart.")
+        log(f"⚠️ CREDENTIAL CHECK FAILED ({info}). Fix the {TRANSPORT.name} "
+            "credentials in .env and restart.")
     mode = f"llm={LLM_MODE} workdir={LLM.workdir}" if LLM else "command-only"
     log(f"Ogma up. transport={TRANSPORT.name} {mode} "
         f"allowed={ALLOWED or '(none — locked down)'}"
         + (f" guests={GUESTS}" if GUESTS else ""))
     for upd in TRANSPORT.updates():
         chat_id, from_id, text = upd["chat_id"], upd["from_id"], upd["text"]
-        # Authorize the SENDER. In a private chat that's the chat itself; in a
-        # group (negative chat id) it's the author — otherwise allow-listing a
-        # group would hand the command runner to every member.
-        actor = from_id if (chat_id.startswith("-") and from_id) else chat_id
+        # Authorize the ACTOR the transport designates — the sender in anything
+        # group-shaped, the chat itself in Telegram DMs (see each transport's
+        # updates()); otherwise allow-listing a group would hand the command
+        # runner to every member.
+        actor = upd.get("actor") or chat_id
         if actor in ALLOWED:
             guest = False
         elif actor in GUESTS:
@@ -603,8 +631,8 @@ def main() -> None:
                 _denied[actor] = now
                 log("denied", actor, f"(chat {chat_id})")
                 audit("denied", actor, chat=chat_id)
-                send(chat_id, f"⛔ Not authorized. Your ID is `{actor}` — "
-                              "add it to TELEGRAM_ALLOWED_USERS to enable access.")
+                send(chat_id, f"⛔ Not authorized. Your ID is `{actor}` — add it "
+                              f"to {ID_VAR_PREFIX}_ALLOWED_USERS to enable access.")
             continue
         # Surface inbound delivery lag (send time is Telegram's server clock):
         # a message that sat queued behind a dead long-poll looks like a slow

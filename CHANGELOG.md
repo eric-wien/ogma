@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] — 2026-07-09
+
+### Added
+- **Matrix transport.** `OGMA_TRANSPORT=matrix` runs the gateway against your own
+  Matrix homeserver via the new `transport_matrix.py` — the same six-method seam
+  as Telegram, still Python stdlib only (plain HTTPS long-polling `/sync`, no
+  matrix-nio). Designed for a trusted self-hosted homeserver (ideally
+  federation-off): the channel never touches third-party infrastructure. No
+  E2EE — that would require native olm bindings; the trust anchor is your
+  server. Credentials go in `config/matrix_bot.env.local` (covered twice by the
+  fail-closed gitignore) or `.env`; allow-lists are per-backend
+  (`MATRIX_ALLOWED_USERS` / `MATRIX_GUEST_USERS`). Safety details: the bot
+  auto-joins room invites only from allowed/guest users; the first sync skips
+  the room backlog so a stale message is never replayed as a fresh command; the
+  sender (never the room) is what gets authorized.
+
+### Changed
+- **Transports designate the actor.** Each transport's `updates()` now yields
+  an explicit `actor` field (who the gateway authorizes) instead of the gateway
+  applying Telegram's negative-chat-id group rule to every backend. Telegram
+  behavior is unchanged: author in groups, chat in DMs.
+
 ## [2.1.0] — 2026-07-09
 
 ### Added

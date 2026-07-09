@@ -6,14 +6,15 @@ The gateway talks to chat through this small surface only:
 
     validate()               -> (ok, bot_username)     token sanity check
     register_menu(commands)  -> None                   slash-command menu (optional capability)
-    updates()                -> yields {"chat_id", "from_id", "text"}
+    updates()                -> yields {"chat_id", "from_id", "actor", "text", "date"}
     send(chat_id, text)      -> None                   chunked, with one retry
     send_document(chat_id, filename, content, caption) -> None   long output as a file
     typing(chat_id)          -> None                   best-effort activity indicator
 
-A future transport (e.g. Signal via signal-cli) implements the same surface and the
-gateway shouldn't need to change. Keep protocol quirks (UTF-16 length rule, 4096
-limit, getUpdates offsets, multipart uploads) on this side of the seam.
+Every transport implements the same surface (see transport_matrix.py for the
+Matrix sibling) and the gateway doesn't change. Keep protocol quirks (UTF-16
+length rule, 4096 limit, getUpdates offsets, multipart uploads) on this side
+of the seam.
 
 Zero third-party dependencies: Python standard library only.
 """
@@ -94,8 +95,10 @@ class TelegramTransport:
     def updates(self) -> Iterator[dict]:
         """Long-poll getUpdates forever, yielding one dict per text message.
 
-        chat_id is where to reply; from_id is who wrote it (differs from chat_id
-        in groups — the gateway authorizes on the sender there); date is Telegram's
+        chat_id is where to reply; from_id is who wrote it; actor is who the
+        gateway should authorize — the chat itself in a private chat, the
+        author in a group (negative chat id), since allow-listing a group must
+        not hand the command runner to every member; date is Telegram's
         server-side send timestamp (unix), which lets the gateway measure delivery
         lag and judge time-sensitive replies (/confirm) by when the user actually
         sent them. Transport errors are logged and retried here; the gateway never
@@ -120,9 +123,12 @@ class TelegramTransport:
                 msg = upd.get("message") or upd.get("edited_message")
                 if not msg or "text" not in msg:
                     continue
+                chat_id = str(msg["chat"]["id"])
+                from_id = str((msg.get("from") or {}).get("id") or "")
                 yield {
-                    "chat_id": str(msg["chat"]["id"]),
-                    "from_id": str((msg.get("from") or {}).get("id") or ""),
+                    "chat_id": chat_id,
+                    "from_id": from_id,
+                    "actor": from_id if (chat_id.startswith("-") and from_id) else chat_id,
                     "text": msg["text"],
                     "date": int(msg.get("date") or 0),
                 }
