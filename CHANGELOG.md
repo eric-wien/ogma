@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.4.0] — 2026-07-09
+
+### Added
+- **Matrix: command list published as the room topic.** Element (X) has no
+  bot-command menu UI, so Matrix users had no way to discover commands beyond
+  knowing `/help`. The matrix transport's `register_menu` now formats the
+  command list as a one-line topic (`Commands: /help /status … | /help for
+  details`) and sets it in every joined room on gateway startup, and in rooms
+  joined via invite — commands change only across a restart, so the topic
+  stays current automatically. The update is skipped when the topic already
+  matches (no "changed the topic" notice per restart). Setting a topic needs
+  power level ≥ 50 in the room; where the bot is a plain member the failure is
+  logged and everything else proceeds.
+
 ## [2.3.0] — 2026-07-09
 
 ### Added
