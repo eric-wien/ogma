@@ -5,7 +5,7 @@ Matrix transport for the Ogma gateway — every Matrix-specific detail lives her
 Implements the same surface as transport_telegram.py:
 
     validate()               -> (ok, info)              credential sanity check
-    register_menu(commands)  -> None                    no-op (no server-side menus)
+    register_menu(commands)  -> None                    command list -> room topics
     updates()                -> yields {"chat_id", "from_id", "actor", "text", "date"}
     send(chat_id, text)      -> None                    chunked, with one retry
     send_document(chat_id, filename, content, caption) -> None   long output as a file
@@ -68,6 +68,12 @@ def _q(s: str) -> str:
     return urllib.parse.quote(s, safe="")
 
 
+def _build_topic(commands: list[tuple[str, str]]) -> str:
+    """One-line command reference for a room topic (names arrive slash-less)."""
+    return ("Commands: " + " ".join("/" + c for c, _ in commands)
+            + " | /help for details")
+
+
 class MatrixTransport:
     name = "matrix"
 
@@ -77,6 +83,7 @@ class MatrixTransport:
         self.user_id = user_id
         self.token = access_token
         self.since_file = state_dir / "matrix_sync.since"
+        self._menu_topic = ""  # set by register_menu; "" until then
         # Inviters the bot follows into rooms: exactly the people the gateway
         # would listen to anyway.
         self.trusted_inviters = {
@@ -118,9 +125,40 @@ class MatrixTransport:
         self.user_id = got
         return (True, got.lstrip("@"))
 
+    def _set_topic(self, room_id: str) -> bool:
+        """Publish the command reference as the room topic. Skips the PUT when
+        the topic already matches — a state event per restart would litter the
+        timeline with 'changed the topic' notices. Needs power level >= 50 in
+        the room; failures (403 in rooms where the bot is a plain member) are
+        logged, never fatal."""
+        if not self._menu_topic:
+            return False
+        path = f"/_matrix/client/v3/rooms/{_q(room_id)}/state/m.room.topic/"
+        try:
+            if self._call("GET", path).get("topic") == self._menu_topic:
+                return True
+        except Exception:  # noqa: BLE001 — 404 = no topic yet; just set it
+            pass
+        try:
+            self._json("PUT", path, {"topic": self._menu_topic})
+            return True
+        except Exception as e:  # noqa: BLE001
+            log(f"matrix: could not set topic in {room_id}:", e)
+            return False
+
     def register_menu(self, commands: list[tuple[str, str]]) -> None:
-        """Matrix has no server-side command menu; /help lists the commands."""
-        log(f"matrix: no command menu to register ({len(commands)} commands via /help)")
+        """Element (X) has no bot-command menu UI, so the room topic is the
+        persistent, always-visible command reference. Called on every gateway
+        startup, so the topic follows command changes automatically."""
+        self._menu_topic = _build_topic(commands)
+        try:
+            rooms = self._call(
+                "GET", "/_matrix/client/v3/joined_rooms").get("joined_rooms", [])
+        except Exception as e:  # noqa: BLE001
+            log("matrix: joined_rooms failed, command topic not set:", e)
+            return
+        n = sum(self._set_topic(r) for r in rooms)
+        log(f"matrix: command topic current in {n}/{len(rooms)} room(s)")
 
     # -----------------------------------------------------------------------
     # Receiving
@@ -161,6 +199,7 @@ class MatrixTransport:
             try:
                 self._json("POST", f"/_matrix/client/v3/join/{_q(room_id)}", {})
                 log(f"matrix: joined {room_id} (invited by {inviter})")
+                self._set_topic(room_id)
             except Exception as e:  # noqa: BLE001
                 log(f"matrix: join {room_id} failed:", e)
 
