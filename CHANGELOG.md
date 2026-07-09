@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] — 2026-07-09
+
+### Added
+- **Backups skip when nothing changed.** `bin/backup` fingerprints its manifest
+  (path, size and mtime of every host-local file) and compares it to the
+  fingerprint recorded after the last successful run (stored in the backup
+  directory, outside the repo). On a match the archive is skipped entirely;
+  a timer run posts a one-line "skipped" note instead. New `--force` flag
+  archives regardless, and a stale fingerprint never suppresses the first
+  backup after the archives were deleted.
+
+### Security
+- **Fail-closed `.gitignore`.** Host-local files used to be ignored one by one —
+  forgetting an entry meant a private file could be committed to a fork. The
+  rules are now pattern-based and fail closed: anything with `.local` in its
+  name is ignored wherever it lives, and `bin/`, `config/` and `systemd/` are
+  default-deny with an explicit whitelist of the public files. Also widened:
+  `.env*` (catches `.env.bak` copies; `.env.example` stays tracked) and
+  `sessions.json*`. The tracked file set is unchanged. Adding a new *public*
+  file to one of the three directories now requires a whitelist entry — the
+  worst forgetting can do is leave a file out of the repo, not leak one in.
+
 ## [2.0.1] — 2026-07-02
 
 ### Changed

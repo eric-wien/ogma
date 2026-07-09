@@ -30,6 +30,12 @@ Two layers both have to say yes: the JSON file *declares* the command
 *implements and gates* it. Declaring something in JSON can never run anything
 your ogmactl.local would refuse.
 
+Your local files can't leak into a fork/PR by accident: `.gitignore` ignores
+anything with `.local` in its name wherever it lives, and `bin/`, `config/` and
+`systemd/` are default-deny — everything in them is ignored except the
+whitelisted public files. Anything you add there stays on your host without
+any `.gitignore` edit.
+
 ## Step 1 — implement the subcommand (`bin/ogmactl.local`)
 
 Create an executable `bin/ogmactl.local` (gitignored; `ogmactl` delegates any
