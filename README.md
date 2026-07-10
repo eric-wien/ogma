@@ -10,7 +10,8 @@ analyze.
 
 One always-on Python process (stdlib only) long-polls Telegram — or, with
 `OGMA_TRANSPORT=matrix`, your own Matrix homeserver, keeping the whole channel on infrastructure
-you control. No inbound ports, no pip installs, no API key plumbing — the optional LLM layer
+you control. On Matrix, images you send reach the assistant layer too — Claude views and
+responds to them. No inbound ports, no pip installs, no API key plumbing — the optional LLM layer
 reuses your existing Claude Code auth on the box, and without it there is no Claude dependency
 at all (`OGMA_LLM=off`).
 

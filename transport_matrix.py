@@ -11,6 +11,13 @@ Implements the same surface as transport_telegram.py:
     send_document(chat_id, filename, content, caption) -> None   long output as a file
     typing(chat_id)          -> None                    best-effort activity indicator
 
+Beyond that surface, media messages (m.image/m.file/m.video/m.audio) are
+yielded with an extra "media" dict ({"url" mxc://, "msgtype", "filename",
+"mimetype", "size"}; "text" carries the caption when the client sent one), and
+download_media(mxc, max_bytes) fetches the bytes — the gateway uses the pair to
+show images to the LLM layer. Transports without these simply never yield
+"media", so the gateway needs no capability check.
+
 Speaks the plain Matrix client-server API (long-polling /sync) against your own
 homeserver over TLS — no third party sees the channel, which is the point of
 this backend. End-to-end encryption is NOT implemented: E2EE needs olm and a
@@ -240,19 +247,72 @@ class MatrixTransport:
                             or ev.get("sender") == self.user_id):
                         continue
                     content = ev.get("content") or {}
-                    if content.get("msgtype") != "m.text":
-                        continue
-                    yield {
+                    msgtype = content.get("msgtype")
+                    upd = {
                         "chat_id": room_id,
                         "from_id": ev.get("sender", ""),
                         "actor": ev.get("sender", ""),
                         "text": str(content.get("body", "")),
                         "date": int(ev.get("origin_server_ts", 0)) // 1000,
                     }
+                    if msgtype == "m.text":
+                        yield upd
+                        continue
+                    if msgtype not in ("m.image", "m.file", "m.video", "m.audio"):
+                        continue
+                    # Media message. Unencrypted events carry a plain mxc:// in
+                    # content.url (encrypted ones use content.file, which this
+                    # backend deliberately doesn't speak — see module docstring).
+                    url = str(content.get("url", ""))
+                    if not url.startswith("mxc://"):
+                        continue
+                    info = content.get("info") or {}
+                    filename = str(content.get("filename", "")) or upd["text"] or "file"
+                    # Per spec, body is the caption only when a separate
+                    # filename field exists and differs — otherwise it is just
+                    # the filename repeated, which would read as a prompt.
+                    if upd["text"] == filename or not content.get("filename"):
+                        upd["text"] = ""
+                    upd["media"] = {
+                        "url": url,
+                        "msgtype": msgtype,
+                        "filename": filename,
+                        "mimetype": str(info.get("mimetype", "")),
+                        "size": int(info.get("size", 0) or 0),
+                    }
+                    yield upd
             new_since = resp.get("next_batch", "")
             if new_since and new_since != since:
                 since = new_since
                 self._save_since(since)
+
+    def download_media(self, mxc: str, max_bytes: int) -> bytes:
+        """Fetch an mxc:// object from the homeserver, capped at max_bytes.
+
+        Tries the authenticated media endpoint (Matrix 1.11+, the only one
+        modern servers still serve) and falls back to the legacy media repo for
+        older homeservers. Raises on a malformed url, an oversized object, or
+        when both endpoints fail — the caller owns the user-facing message.
+        """
+        server, _, media_id = mxc.removeprefix("mxc://").partition("/")
+        if not mxc.startswith("mxc://") or not server or not media_id or "/" in media_id:
+            raise ValueError(f"not a valid mxc url: {mxc!r}")
+        last_err: Exception = ValueError("no media endpoint answered")
+        for path in (f"/_matrix/client/v1/media/download/{_q(server)}/{_q(media_id)}",
+                     f"/_matrix/media/v3/download/{_q(server)}/{_q(media_id)}"):
+            req = urllib.request.Request(
+                f"{self.homeserver}{path}",
+                headers={"Authorization": f"Bearer {self.token}"})
+            try:
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    data = r.read(max_bytes + 1)
+            except (urllib.error.URLError, OSError) as e:
+                last_err = e
+                continue
+            if len(data) > max_bytes:
+                raise ValueError(f"media larger than {max_bytes} bytes")
+            return data
+        raise last_err
 
     # -----------------------------------------------------------------------
     # Sending

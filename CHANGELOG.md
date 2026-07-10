@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.5.0] — 2026-07-10
+
+### Added
+- **Matrix: inbound images reach the assistant layer (vision).** Images sent to
+  the bot used to be silently dropped — `updates()` only passed `m.text`. The
+  matrix transport now yields media messages (`m.image`/`m.file`/`m.video`/
+  `m.audio`) with a `media` dict (mxc url, filename, mimetype, size; the
+  caption arrives as the message text) plus a `download_media()` helper that
+  speaks the authenticated media endpoint (Matrix 1.11) with a legacy
+  `/_matrix/media/v3` fallback. The gateway downloads images (capped at 10 MB),
+  saves them into the LLM workspace (`media/`, pruned after 14 days), and hands
+  Claude a prompt pointing at the file — Claude Code's Read tool views images
+  natively, so the existing headless session sees and responds to the picture,
+  caption included. Non-image files get a polite notice instead; guests and
+  command-only mode are refused the same way as free text. Encrypted media
+  (`content.file`) is out of scope, matching this backend's no-E2EE design.
+  Ticket: 20260709-215539.
+
 ## [2.4.0] — 2026-07-09
 
 ### Added

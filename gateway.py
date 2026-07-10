@@ -99,6 +99,15 @@ _confirm_lock = threading.Lock()
 
 DOC_THRESHOLD = 8000  # command output longer than this is sent as a file, not chunks
 
+# Inbound media (images sent to the bot). Downloads are capped — this box has
+# 2 GB of RAM and Claude's vision path tops out around this size anyway — and
+# saved copies are pruned after MEDIA_KEEP_DAYS so the workspace can't grow
+# unbounded on the SD card.
+MEDIA_MAX_BYTES = 10 * 1024 * 1024
+MEDIA_KEEP_DAYS = 14
+MEDIA_EXT = {"image/jpeg": ".jpg", "image/png": ".png",
+             "image/gif": ".gif", "image/webp": ".webp"}
+
 
 def log(*a: object) -> None:
     print(time.strftime("%Y-%m-%d %H:%M:%S"), *a, flush=True)
@@ -450,8 +459,70 @@ def launch_detached(script: str) -> bool:
     return True
 
 
+def media_to_prompt(chat_id: str, actor: str, caption: str, guest: bool,
+                    media: dict) -> str | None:
+    """Turn an inbound media message into a free-text prompt for the LLM layer.
+
+    Sends the refusal/notice itself and returns None when there is nothing to
+    hand to Claude (guest, no LLM, non-image, download failure). Images are
+    saved into the LLM workspace and the prompt points Claude at the file —
+    its Read tool views images natively, so no API plumbing is needed here.
+    """
+    filename, mimetype = media.get("filename", "file"), media.get("mimetype", "")
+    if guest:
+        audit("guest-refused", actor, f"media {filename}")
+        send(chat_id, GUEST_MSG)
+        return None
+    if LLM is None:
+        send(chat_id, NO_LLM_MSG)
+        return None
+    if not mimetype.startswith("image/"):
+        send(chat_id, f"📎 Got {filename} ({mimetype or 'unknown type'}) — "
+                      "I can only look at images for now.")
+        return None
+    size = int(media.get("size", 0) or 0)
+    if size > MEDIA_MAX_BYTES:
+        send(chat_id, f"⚠️ That image is {size // (1024 * 1024)} MB — "
+                      f"I only take up to {MEDIA_MAX_BYTES // (1024 * 1024)} MB.")
+        return None
+    try:
+        data = TRANSPORT.download_media(media["url"], MEDIA_MAX_BYTES)
+    except Exception as e:  # noqa: BLE001
+        log("media download failed:", e)
+        send(chat_id, "⚠️ Couldn't fetch that image from the homeserver — try resending it.")
+        return None
+    media_dir = Path(LLM.workdir) / "media"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename).strip("._")[-60:] or "image"
+    if not Path(safe).suffix:
+        safe += MEDIA_EXT.get(mimetype, ".img")
+    path = media_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{safe}"
+    try:
+        media_dir.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        cutoff = time.time() - MEDIA_KEEP_DAYS * 86400
+        for old in media_dir.iterdir():
+            if old.is_file() and old.stat().st_mtime < cutoff:
+                old.unlink(missing_ok=True)
+    except OSError as e:
+        log("media save failed:", e)
+        send(chat_id, "⚠️ Couldn't store that image on disk.")
+        return None
+    audit("media", actor, filename, bytes=len(data), path=str(path))
+    prompt = (f"I just sent you an image over chat; it is saved at {path} — "
+              "view it with the Read tool, then respond to it.")
+    if caption.strip():
+        prompt += f"\nMy message with it: {caption.strip()}"
+    return prompt
+
+
 def handle(chat_id: str, actor: str, text: str, guest: bool,
-           sent_ts: float = 0.0) -> None:
+           sent_ts: float = 0.0, media: dict | None = None) -> None:
+    if media is not None:
+        prompt = media_to_prompt(chat_id, actor, text, guest, media)
+        if prompt is None:
+            return
+        text = prompt  # falls through to the free-text LLM path below
+
     stripped = text.strip()
     parts = stripped.split(maxsplit=1)
     cmd = parts[0].lower() if parts else ""
@@ -574,13 +645,14 @@ def handle(chat_id: str, actor: str, text: str, guest: bool,
     send(chat_id, reply)
 
 
-def _worker(chat_id: str, actor: str, text: str, guest: bool, sent_ts: float) -> None:
+def _worker(chat_id: str, actor: str, text: str, guest: bool, sent_ts: float,
+            media: dict | None = None) -> None:
     """Handle one message in its own thread, then release the per-chat slot."""
     # Log completion + duration: the receipt line alone can't distinguish "still
     # running", "killed mid-flight", and "reply delayed by a Telegram stall".
     t0 = time.monotonic()
     try:
-        handle(chat_id, actor, text, guest, sent_ts)
+        handle(chat_id, actor, text, guest, sent_ts, media)
     except Exception as e:  # noqa: BLE001
         log("handler error:", e)
         send(chat_id, "⚠️ Something broke handling that. Logged it.")
@@ -639,7 +711,10 @@ def main() -> None:
         # bot otherwise. Small offsets are clock noise, only log real lag.
         sent_ts = float(upd.get("date") or 0)
         lag = (time.time() - sent_ts) if sent_ts else 0.0
-        log(f"[{chat_id}] {text[:80]}"
+        media = upd.get("media")
+        log(f"[{chat_id}] "
+            + (f"[{media['msgtype']} {media.get('filename', '')}] " if media else "")
+            + text[:80]
             + (f" (sent {lag:.0f}s ago)" if lag > 5 else ""))
         # Concurrency guard: one in-flight message per chat. Drop a second one
         # (with a notice) rather than overlapping runs. Handle in a thread so a
@@ -652,7 +727,8 @@ def main() -> None:
             send(chat_id, "⏳ Still working on your previous message — give me a moment, "
                           "then resend if needed.")
             continue
-        threading.Thread(target=_worker, args=(chat_id, actor, text, guest, sent_ts),
+        threading.Thread(target=_worker,
+                         args=(chat_id, actor, text, guest, sent_ts, media),
                          daemon=True).start()
 
 
