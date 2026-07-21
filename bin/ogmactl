@@ -106,8 +106,9 @@ case "$cmd" in
     fi
     body="$*"
     [ -n "$body" ] || { echo "usage: ogmactl remember [--type T] <text>"; exit 2; }
-    # Home-project auto-memory dir (derive from $HOME, slashes -> dashes), matching bin/dream.
-    MEM="$HOME/.claude/projects/$(printf '%s' "$HOME" | sed 's#/#-#g')/memory"
+    MEM="$(cfg MEMORY_DIR)"
+    [ -n "$MEM" ] || MEM="$HOME/.claude/projects/$(printf '%s' "$HOME" | sed 's#/#-#g')/memory"
+    MEM="${MEM/#\~/$HOME}"
     mkdir -p "$MEM"
     # One-line description / slug from the text; fall back to a timestamp slug.
     desc="$(printf '%s' "$body" | tr '\n' ' ' | sed 's/  */ /g; s/^ //; s/ $//')"
@@ -164,6 +165,7 @@ case "$cmd" in
     MD="$WS/CLAUDE.local.md"
     [ -f "$MD" ] || { echo "no CLAUDE.local.md yet — run bin/setup first."; exit 1; }
     persona_render "$ENV" "$MD"
+    [ -f "$WS/AGENTS.local.md" ] && persona_render "$ENV" "$WS/AGENTS.local.md"
     echo "✅ Persona updated. Restart to apply it: ogmactl restart"
     ;;
   ticket)

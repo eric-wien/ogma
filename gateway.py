@@ -82,9 +82,8 @@ ID_VAR_PREFIX = "MATRIX" if TRANSPORT_KIND == "matrix" else "TELEGRAM"
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 ALLOWED = _id_set(f"{ID_VAR_PREFIX}_ALLOWED_USERS")   # admins: everything
 GUESTS = _id_set(f"{ID_VAR_PREFIX}_GUEST_USERS") - ALLOWED  # read-only command subset
-CLAUDE_BIN = os.environ.get(
-    "CLAUDE_BIN", str(Path.home() / ".local/bin/claude")
-)
+CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(Path.home() / ".local/bin/claude"))
+CODEX_BIN = os.environ.get("CODEX_BIN", str(Path.home() / ".local/bin/codex"))
 
 _inflight: set = set()                       # chat_ids with a message currently being handled
 _inflight_lock = threading.Lock()
@@ -139,8 +138,8 @@ def audit(event: str, actor: str, detail: str = "", **extra: object) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Optional LLM layer. OGMA_LLM=claude (default) enables it when the `claude`
-# binary exists; OGMA_LLM=off runs a pure command runner. LLM stays None in
+# Optional LLM layer. OGMA_LLM=claude or codex selects a harness;
+# OGMA_LLM=off runs a pure command runner. LLM stays None in
 # command-only mode and every LLM feature checks it — llm_claude is only
 # imported (and its config only read) when the layer is actually on.
 # ---------------------------------------------------------------------------
@@ -155,8 +154,16 @@ elif LLM_MODE == "claude":
     else:
         log(f"claude binary not found at {CLAUDE_BIN} — running in command-only "
             "mode (install Claude Code or set CLAUDE_BIN to enable the LLM layer)")
+elif LLM_MODE == "codex":
+    if Path(CODEX_BIN).exists():
+        from llm_codex import CodexLLM
+        LLM = CodexLLM(BASE)
+    else:
+        log(f"codex binary not found at {CODEX_BIN} — running in command-only "
+            "mode (install Codex CLI or set CODEX_BIN to enable the LLM layer)")
 else:
-    log(f"unknown OGMA_LLM={LLM_MODE!r} (use 'claude' or 'off') — command-only mode")
+    log(f"unknown OGMA_LLM={LLM_MODE!r} (use 'claude', 'codex', or 'off') — "
+        "command-only mode")
 
 
 # ---------------------------------------------------------------------------
@@ -432,7 +439,7 @@ def execute_command(chat_id: str, actor: str, cmd: str, argv: list[str]) -> None
 def script_busy(script: str) -> bool:
     """True if bin/<script> currently holds its state/<script>.lock flock.
 
-    briefing/dream run detached and each is a full claude invocation — without this
+    briefing/dream run detached and each is a full LLM invocation — without this
     check a repeated /briefing would stack concurrent runs outside the LLM layer's
     concurrency limit.
     """
@@ -464,9 +471,9 @@ def media_to_prompt(chat_id: str, actor: str, caption: str, guest: bool,
     """Turn an inbound media message into a free-text prompt for the LLM layer.
 
     Sends the refusal/notice itself and returns None when there is nothing to
-    hand to Claude (guest, no LLM, non-image, download failure). Images are
-    saved into the LLM workspace and the prompt points Claude at the file —
-    its Read tool views images natively, so no API plumbing is needed here.
+    hand to the assistant (guest, no LLM, non-image, download failure). Images are
+    saved into the LLM workspace and the prompt points the harness at the file,
+    so no API plumbing is needed here.
     """
     filename, mimetype = media.get("filename", "file"), media.get("mimetype", "")
     if guest:

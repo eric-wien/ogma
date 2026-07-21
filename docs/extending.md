@@ -9,8 +9,8 @@ involved anywhere on this path.
 
 1. **Core** — the gateway + command runner (`gateway.py`,
    `transport_telegram.py`, `bin/ogmactl`). Python stdlib only.
-2. **LLM layer** (optional) — free-text chat via Claude Code
-   (`llm_claude.py`; `OGMA_LLM=claude`).
+2. **LLM layer** (optional) — free-text chat via Claude Code or OpenAI Codex
+   (`llm_claude.py` / `llm_codex.py`; `OGMA_LLM=claude|codex`).
 3. **Assistant layer** (optional, needs the LLM layer) — briefing, dream/memory,
    persona, skills.
 

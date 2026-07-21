@@ -45,7 +45,9 @@ TG_SEND = str(REPO_ROOT / "bin" / "tg-send")
 # Claude Code's per-project memory: ~/.claude/projects/<home-with-slashes-as-dashes>/memory/
 _PROJ = str(Path.home()).replace("/", "-")
 PROJECTS_DIR = str(Path.home() / ".claude/projects")
-MEMORY_DIR = str(Path.home() / ".claude/projects" / _PROJ / "memory") + "/"
+MEMORY_DIR = os.environ.get(
+    "OGMA_MEMORY_DIR", str(Path.home() / ".claude/projects" / _PROJ / "memory")
+).rstrip("/") + "/"
 
 
 def build_nudge(transcript: str) -> str:

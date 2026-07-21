@@ -3,30 +3,30 @@
 [![CI](https://github.com/eric-wien/ogma/actions/workflows/ci.yml/badge.svg)](https://github.com/eric-wien/ogma/actions/workflows/ci.yml)
 
 A secure remote command runner for your own machine, driven from **Telegram or Matrix** — with an optional
-**Claude Code** assistant layer on top. You define the commands your box exposes (a strict
+**Claude Code or OpenAI Codex** assistant layer on top. You define the commands your box exposes (a strict
 whitelist, no shell) and run them from your phone from anywhere. Optionally, free-text chat goes
-to a resumable headless `claude` session: a conversation partner that can perform tasks and
+to a resumable headless session in the selected harness: a conversation partner that can perform tasks and
 analyze.
 
 One always-on Python process (stdlib only) long-polls Telegram — or, with
 `OGMA_TRANSPORT=matrix`, your own Matrix homeserver, keeping the whole channel on infrastructure
-you control. On Matrix, images you send reach the assistant layer too — Claude views and
-responds to them. No inbound ports, no pip installs, no API key plumbing — the optional LLM layer
-reuses your existing Claude Code auth on the box, and without it there is no Claude dependency
+you control. On Matrix, images you send reach the assistant layer too. No inbound ports, no pip
+installs, no API key plumbing — the optional LLM layer reuses the selected CLI's existing auth,
+and without it there is no model-provider dependency
 at all (`OGMA_LLM=off`).
 
 **Self-host model.** Ogma is meant to be run by you, on your own always-on machine, talking to
-your own Telegram bot, using your own Claude Code auth. There is no hosted service, no shared
+your own Telegram bot, using your own Claude Code or Codex auth. There is no hosted service, no shared
 bot, and nothing phones home; the repo ships no token.
 
 Inspired by [Nous Research's Hermes Agent](https://github.com/NousResearch/hermes-agent), rebuilt
-on Claude Code's native skills + memory + subagents. Named for Ogma, the Celtic god of eloquence
+around coding-agent-native skills, memory, and resumable sessions. Named for Ogma, the Celtic god of eloquence
 and the inventor of writing.
 
 ## How it works
 
 Ogma has **two surfaces, one brain, bridged by tickets**: an always-on but deliberately
-*restricted* Telegram bot, and your *full-power* interactive Claude Code sessions. When the bot
+*restricted* Telegram bot, and your *full-power* interactive Claude Code or Codex sessions. When the bot
 can't safely do something (edit files, run code), it files a **ticket** instead of faking it; you
 clear tickets in a full session with the `tickets` skill, and shared memory + skills carry the
 learning forward. The full design — and why the bot is intentionally limited — is in
@@ -37,7 +37,7 @@ learning forward. The full design — and why the bot is intentionally limited �
 Each optional layer sits on the one below and can be left off:
 
 ```
-CORE — the command runner (stdlib only, no Claude anywhere)
+CORE — the command runner (stdlib only, no LLM anywhere)
   gateway.py               allow-list/roles, /confirm, arg validation, audit, dispatch
   transport_telegram.py    all Telegram specifics behind a small transport seam
   transport_matrix.py      the same seam speaking Matrix (self-hosted homeserver)
@@ -45,20 +45,21 @@ CORE — the command runner (stdlib only, no Claude anywhere)
   bin/ogmactl.local        + config/commands.local.json — YOUR commands (docs/extending.md)
   bin/setup|backup|restore|health-check|logtrim|notify, systemd/, tickets/
 
-LLM LAYER (optional; OGMA_LLM=claude) — free-text chat
+LLM LAYER (optional; OGMA_LLM=claude|codex) — free-text chat
   llm_claude.py            headless `claude -p` runs, per-chat resumable sessions
+  llm_codex.py             headless `codex exec` runs, separate resumable threads
 
 ASSISTANT LAYER (optional; needs the LLM layer) — the personal-assistant extras
-  workspace/CLAUDE.md      persona (+ gitignored host overlays)
-  hooks/persist-nudge.py   memory-persist Stop hook
+  workspace/CLAUDE.md|AGENTS.md  provider-native persona files (+ host overlays)
+  hooks/persist-nudge*.py  provider-native memory persistence
   bin/briefing|dream       morning briefing / nightly memory consolidation
-  skills/                  tickets, session-search, daily-briefing → ~/.claude/skills/
+  skills/                  shared skills → ~/.claude/skills/ and ~/.codex/skills/
 ```
 
-### Command-only mode (no Claude required)
+### Command-only mode (no LLM required)
 
 The command runner works entirely without the LLM: set `OGMA_LLM=off` (or simply don't install
-the `claude` CLI) and the gateway runs your whitelisted `ogmactl` commands and nothing else —
+either assistant CLI) and the gateway runs your whitelisted `ogmactl` commands and nothing else —
 free text gets a polite refusal, and the LLM commands (`/new`, `/model`, `/briefing`, `/search`,
 …) disappear from the menu. This is the core of Ogma: a chat-driven remote terminal restricted to
 commands **you** predefined. Add your own via `bin/ogmactl.local` +
@@ -98,7 +99,7 @@ Provided as-is, no warranty. You are responsible for what you let it do on your 
 
 ## Setup
 
-You create your **own** Telegram bot and use your **own** Claude Code auth.
+You create your **own** Telegram bot and use your **own** Claude Code or Codex auth.
 
 ### Quick start (recommended)
 
@@ -110,7 +111,7 @@ bin/setup        # interactive: token, persona, skills, systemd, chat-ID — all
 The script walks you through everything in [Manual setup](#manual-setup) below and never
 transmits anything off your machine. To re-check an existing install without changing anything,
 run `bin/setup --check` — it validates your token, allow-list, model/effort/fallback, the
-`claude` CLI, the service, and installed skills.
+selected CLI, the service, and installed skills.
 
 **Re-running on an existing install.** First run does the full interview. When `.env` already
 exists, `bin/setup` instead lets you pick **which sections to revisit** — `env`, `llm`,
@@ -120,6 +121,11 @@ whole flow. Pick from the menu, or go non-interactive: `bin/setup --reconfigure 
 if you changed something it reads at startup (`.env`/persona/model/overlays) it offers to
 **restart the gateway so the change takes effect** (decline to apply it later with
 `ogmactl restart`).
+
+To switch harnesses later, run `bin/setup --reconfigure llm,model,overlays`, choose `claude` or
+`codex`, and restart when offered. Claude and Codex session IDs stay in separate files, while the
+persona, skills, tickets, and `OGMA_MEMORY_DIR` remain shared; switching back resumes that
+harness's prior chat context.
 
 **Updating after a `git pull`.** New/changed *bot commands* need no setup — the gateway
 re-registers its slash-command menu with Telegram on every startup, so `ogmactl restart` (or
@@ -212,9 +218,9 @@ Always available (the command runner — deterministic, no LLM call):
 - every executed command is recorded in the append-only audit log (`state/audit.log`, JSON
   lines: who, what, exit code, duration) — view it with `/logs audit`
 
-Only with the LLM layer (`OGMA_LLM=claude`, the default when the `claude` CLI is installed):
+Only with the LLM layer (`OGMA_LLM=claude` or `codex`):
 
-- `/new` — start a fresh Claude session for this chat
+- `/new` — start a fresh session for this chat (provider-specific session IDs are kept separately)
 - `/model [name]` — show or change the model live (`sonnet`, `haiku`, `opus`, a full id, or
   `default`); persists to `.env`
 - `/effort [level]` — show or change reasoning effort live
@@ -222,7 +228,7 @@ Only with the LLM layer (`OGMA_LLM=claude`, the default when the `claude` CLI is
 - `/fallback [name]` — model used automatically if the main one is unavailable (`none` to
   clear); persists to `.env`
 - `/briefing` `/dream` `/search` — the assistant routines
-- anything else — sent to Claude (in command-only mode free text gets a refusal instead)
+- anything else — sent to the selected harness (in command-only mode free text gets a refusal)
 
 ## Configuration reference (`.env`)
 
@@ -231,18 +237,23 @@ Only with the LLM layer (`OGMA_LLM=claude`, the default when the `claude` CLI is
 | `TELEGRAM_BOT_TOKEN` | BotFather token (**required**) | — |
 | `TELEGRAM_ALLOWED_USERS` | comma-separated allowed chat IDs (**required**; full/admin access) | — |
 | `TELEGRAM_GUEST_USERS` | chat IDs with read-only access: `/status`, `/health`, local commands marked `"guest": true` — no LLM | — |
-| `OGMA_LLM` | `claude` = assistant layer on; `off` = command-only mode (no LLM) | `claude` if the CLI exists |
+| `OGMA_LLM` | `claude`, `codex`, or `off`; switching never changes the messenger command path | `claude` |
 | `OGMA_CONFIRM_TTL` | seconds a /confirm-protected command stays armed (min 30) | `180` |
 | `CLAUDE_BIN` | path to the `claude` CLI | `~/.local/bin/claude` |
+| `CODEX_BIN` | path to the `codex` CLI | `~/.local/bin/codex` |
 | `CLAUDE_TIMEOUT` | per-message timeout (seconds) | `300` |
+| `CODEX_TIMEOUT` | Codex per-message timeout (falls back to `CLAUDE_TIMEOUT`) | `300` |
 | `OGMA_MAX_CONCURRENT` | max concurrent Claude runs across chats (raise only on a roomy host) | `1` |
 | `OGMA_WORKDIR` | Claude's working dir | `./workspace` |
 | `OGMA_PERMISSION_MODE` | e.g. `acceptEdits`; empty = safest | empty |
 | `OGMA_ALLOWED_TOOLS` | curated tool allow-list | empty |
+| `OGMA_CODEX_SANDBOX` | Codex messenger sandbox: `read-only`, `workspace-write`, `danger-full-access` | `read-only` |
+| `OGMA_MEMORY_DIR` | shared memory directory used by both harnesses and dream | existing Claude home-project memory |
 | `OGMA_MODEL` | gateway model (live-changeable via `/model`) | Claude Code default |
 | `OGMA_FALLBACK_MODEL` | model used if the primary is unavailable (live via `/fallback`) | none |
 | `OGMA_EFFORT` | reasoning effort `low`..`max` (live-changeable via `/effort`) | CLI default |
 | `OGMA_DREAM_MODEL` | nightly memory job model (standard-context id avoids the 1M credit gate) | `claude-sonnet-4-6` |
+| `OGMA_CODEX_DREAM_MODEL` | Codex-only dream model override | Codex gateway/default model |
 | `OGMA_OWNER_NAME` | who the briefing addresses | `you` |
 | `OGMA_WEATHER_LOC` | wttr.in location for the briefing | geolocate by IP |
 | `OGMA_RSS_FEEDS` | `Label\|url` pairs for the briefing | generic world-news set |

@@ -12,12 +12,12 @@ the bot runs with a *tight* toolset: read-only + web, plus exactly one whitelist
 code, or run arbitrary commands. That restriction is the safety model, not a limitation to "fix".
 
 **2. The interactive session — full power, on demand.**
-When you sit down at the machine (or SSH in) and run Claude Code directly, you get the full toolset:
+When you sit down at the machine (or SSH in) and run Claude Code or Codex directly, you get the full toolset:
 edits, code, shell, the works. This is where real changes happen.
 
 ```
    ┌─────────────────────────┐         ┌──────────────────────────────┐
-   │  Telegram bot (Ogma)     │         │  Interactive Claude Code      │
+   │  Telegram bot (Ogma)     │         │  Interactive Claude / Codex   │
    │  always on, restricted   │         │  full tools, on demand        │
    │  read-only + web + ogmactl│        │  edit / code / shell          │
    └───────────┬─────────────┘         └───────────────┬──────────────┘
@@ -41,7 +41,7 @@ ogmactl ticket "Add a /weather command that ..."
 ```
 
 That writes a markdown file into `tickets/`. Later, in a full interactive session, you say
-"tickets" and the **`tickets` skill** lists the queue, you (with Claude) work the item with full
+"tickets" and the **`tickets` skill** lists the queue, you work the item with the selected harness and full
 tools, append a `## Resolution`, mark it `done`, and move it to `tickets/done/`. If the fix taught
 the system something — a new `ogmactl` subcommand, a relaxed permission — that knowledge stays.
 
@@ -58,9 +58,9 @@ Both surfaces share the same context, so the bot and your interactive sessions f
 assistant:
 
 - **Persona** — `workspace/CLAUDE.md` defines who Ogma is and how it behaves.
-- **Memory** — Claude Code's per-project memory (`~/.claude/projects/<project>/memory/`) holds
-  durable facts about you and your projects. The bot reads and writes it; so do you.
-- **Skills** — reusable procedures in `~/.claude/skills/` (`tickets`, `session-search`,
+- **Memory** — one configured directory (by default the existing Claude home-project memory)
+  holds durable facts about you and your projects. Both harnesses and the bot use it.
+- **Skills** — reusable procedures installed in `~/.claude/skills/` and `~/.codex/skills/` (`tickets`, `session-search`,
   `daily-briefing`, and your own). Both surfaces load them on demand. See `../skills/`.
 
 ## Keeping itself sharp

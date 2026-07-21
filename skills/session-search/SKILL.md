@@ -8,15 +8,13 @@ description: Search across past conversations/transcripts to recall what was sai
 Recall information from earlier conversations that isn't in persistent memory.
 
 ## Where to look
-- **First check memory** — Claude Code's per-project memory lives under
-  `~/.claude/projects/<project>/memory/` (the `<project>` segment is the working directory with
-  slashes replaced by dashes, e.g. `-home-youruser`). It's faster and curated; only fall through
-  to transcripts if memory doesn't cover it.
-- Transcripts are JSONL, one file per session, under `~/.claude/projects/*/` (every project dir,
-  including the Ogma workspace's own project dir).
+- **First check memory** — use the shared directory from the workspace host notes (normally the
+  Claude home-project memory). It's faster and curated; only fall through to transcripts if needed.
+- Claude transcripts are JSONL under `~/.claude/projects/*/`. Codex transcripts are JSONL under
+  `~/.codex/sessions/` (or `$CODEX_HOME/sessions/`). Search both so harness switches are seamless.
 
 ## How
-1. Use Grep over `~/.claude/projects/` for the key terms (case-insensitive, `glob: *.jsonl`).
+1. Use Grep over both transcript roots for the key terms (case-insensitive, `glob: *.jsonl`).
    Start broad, then narrow.
 2. For promising hits, Read the surrounding lines of that `.jsonl`. Each line is a JSON record;
    the human/assistant text lives in the `content`/`message` fields and `timestamp` gives the date.

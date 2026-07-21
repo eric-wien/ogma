@@ -1,5 +1,5 @@
 [Unit]
-Description=Ogma Telegram gateway (Claude Code personal assistant)
+Description=Ogma messenger gateway (Claude Code or OpenAI Codex assistant)
 After=network-online.target
 Wants=network-online.target
 # A config error (missing token/CLI) exits immediately; without this guard
@@ -15,7 +15,7 @@ StandardOutput=append:{{OGMA_DIR}}/gateway.log
 StandardError=append:{{OGMA_DIR}}/gateway.log
 Restart=on-failure
 RestartSec=5
-# Make sure the claude binary's dir is on PATH for the service
+# Make sure the selected assistant CLI's dir is on PATH for the service
 Environment=PATH={{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin
 # Hardening. UMask keeps the appended log 600 — it carries chat content.
 UMask=0077

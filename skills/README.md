@@ -1,6 +1,6 @@
 # Ogma skills
 
-These are **reusable procedures** Claude Code loads on demand — the shared playbooks that both
+These are **reusable procedures** Claude Code and OpenAI Codex load on demand — the shared playbooks that both
 surfaces of Ogma rely on (the restricted Telegram bot *and* your full interactive sessions). They
 pair with the ticket system to make the whole workflow hang together; see `../docs/workflow.md`.
 
@@ -11,11 +11,14 @@ pair with the ticket system to make the whole workflow hang together; see `../do
 | `daily-briefing` | Write the morning briefing (template — tune topics/language to taste). |
 
 ## Installing
-Claude Code discovers skills under `~/.claude/skills/`. Copy (or symlink) the ones you want:
+Claude Code discovers skills under `~/.claude/skills/`; Codex uses `~/.codex/skills/`. Install
+into both to keep either harness ready:
 
 ```bash
 mkdir -p ~/.claude/skills
 cp -r ~/ogma/skills/tickets ~/ogma/skills/session-search ~/ogma/skills/daily-briefing ~/.claude/skills/
+mkdir -p ~/.codex/skills
+cp -r ~/ogma/skills/tickets ~/ogma/skills/session-search ~/ogma/skills/daily-briefing ~/.codex/skills/
 # or symlink so repo updates flow through:
 #   ln -s ~/ogma/skills/tickets ~/.claude/skills/tickets
 ```

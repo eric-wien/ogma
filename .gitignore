@@ -20,9 +20,11 @@
 
 # --- Runtime state / artifacts -----------------------------------------------
 sessions.json*
+sessions.codex.json*
 *.log
 state/
 memory-backups/
+workspace/media/
 
 # Tickets are local workflow, not shipped content
 tickets/*.md
@@ -41,6 +43,7 @@ __pycache__/
 bin/*
 !bin/_env.sh
 !bin/_persona.sh
+!bin/_llm.sh
 !bin/backup
 !bin/briefing
 !bin/dream

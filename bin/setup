@@ -42,22 +42,24 @@ PY
 
 # Non-interactive health/config check — `bin/setup --check`. Changes nothing.
 do_check() {
-  local tok allowed llm cb u problems=0
+  local tok allowed llm cb codex_bin active_bin u problems=0
   step "Ogma config check  ${c_dim}($OGMA_DIR)${c_rst}"
   tok="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV" 2>/dev/null | cut -d= -f2-)"
   allowed="$(grep -E '^TELEGRAM_ALLOWED_USERS=' "$ENV" 2>/dev/null | cut -d= -f2-)"
   llm="$(grep -E '^OGMA_LLM=' "$ENV" 2>/dev/null | cut -d= -f2-)"
   cb="$(command -v claude || echo "$HOME/.local/bin/claude")"
+  codex_bin="$(command -v codex || echo "$HOME/.local/bin/codex")"
   [ -f "$ENV" ] && ok ".env present" || { err ".env missing — run bin/setup"; problems=1; }
   [ -n "$tok" ] && ok "token set" || { err "token MISSING"; problems=1; }
   [ -n "$allowed" ] && ok "allowed chats: $allowed" || { err "allowed chats MISSING"; problems=1; }
   if [ "$llm" = "off" ]; then
-    ok "LLM layer: off (command-only mode — no claude CLI needed)"
+    ok "LLM layer: off (command-only mode — no assistant CLI needed)"
   else
     printf '  model     : %s\n' "$(grep -E '^OGMA_MODEL=' "$ENV" 2>/dev/null | cut -d= -f2- | sed 's/^$/(Claude Code default)/')"
     printf '  effort    : %s\n' "$(grep -E '^OGMA_EFFORT=' "$ENV" 2>/dev/null | cut -d= -f2- | sed 's/^$/(default)/')"
     printf '  fallback  : %s\n' "$(grep -E '^OGMA_FALLBACK_MODEL=' "$ENV" 2>/dev/null | cut -d= -f2- | sed 's/^$/(none)/')"
-    [ -x "$cb" ] && ok "claude CLI: $cb" || warn "claude CLI missing ($cb) — gateway will run command-only until it's installed"
+    active_bin="$cb"; [ "$llm" = "codex" ] && active_bin="$codex_bin"
+    [ -x "$active_bin" ] && ok "$llm CLI: $active_bin" || warn "$llm CLI missing ($active_bin)"
   fi
   if [ -n "$tok" ] && command -v curl >/dev/null; then
     # Token goes to curl via --config on a private fd, not argv (world-readable in /proc).
@@ -114,7 +116,9 @@ command -v "$PY" >/dev/null || { err "python3 not found — install it first."; 
 ok "python3: $($PY --version 2>&1)"
 command -v curl >/dev/null && ok "curl present" || warn "curl not found — message delivery (notify/briefing) needs it."
 CLAUDE_BIN="$(command -v claude || true)"; [ -n "$CLAUDE_BIN" ] || CLAUDE_BIN="$HOME/.local/bin/claude"
+CODEX_BIN="$(command -v codex || true)"; [ -n "$CODEX_BIN" ] || CODEX_BIN="$HOME/.local/bin/codex"
 if [ -x "$CLAUDE_BIN" ]; then ok "claude CLI: $CLAUDE_BIN"; else warn "claude CLI not found at $CLAUDE_BIN — that's fine for command-only mode; install Claude Code (or set CLAUDE_BIN in .env) to enable the assistant layer."; fi
+if [ -x "$CODEX_BIN" ]; then ok "codex CLI: $CODEX_BIN"; else warn "codex CLI not found at $CODEX_BIN — install Codex (or set CODEX_BIN) to use that harness."; fi
 HAVE_SYSTEMD=0; if command -v systemctl >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then HAVE_SYSTEMD=1; ok "systemd --user available"; else warn "systemd --user not available — you'll run the gateway manually."; fi
 
 # --- Decide what to (re)configure -------------------------------------------
@@ -191,16 +195,31 @@ fi
 if want llm; then
 step "Assistant layer (optional)"
 say "Ogma always runs your predefined commands. The assistant layer adds free-text"
-say "chat handled by Claude Code (needs the claude CLI + your Claude auth on this box)."
+say "chat handled by Claude Code or OpenAI Codex (using that CLI's saved auth on this box)."
 cur_llm="$(grep -E '^OGMA_LLM=' "$ENV" 2>/dev/null | cut -d= -f2-)"
-def_llm="y"; { [ "$cur_llm" = "off" ] || [ ! -x "$CLAUDE_BIN" ]; } && def_llm="n"
-if yes "Enable the Claude Code assistant layer?" "$def_llm"; then
-  set_env OGMA_LLM "claude"; ok "Assistant layer enabled (OGMA_LLM=claude)."
-  [ -x "$CLAUDE_BIN" ] || warn "claude CLI still missing — the gateway will run command-only until it's installed."
-else
-  set_env OGMA_LLM "off"; ok "Command-only mode (OGMA_LLM=off) — no LLM, no Claude dependency."
+choice="$(ask "Harness: claude, codex, or off" "${cur_llm:-claude}")"
+case "$(printf '%s' "$choice" | tr '[:upper:]' '[:lower:]')" in
+claude)
+  set_env OGMA_LLM "claude"; ok "Assistant layer: Claude Code."
+  [ -x "$CLAUDE_BIN" ] || warn "claude CLI missing — gateway will use command-only mode."
+  ;;
+codex)
+  set_env OGMA_LLM "codex"; ok "Assistant layer: OpenAI Codex."
+  [ -x "$CODEX_BIN" ] || warn "codex CLI missing — gateway will use command-only mode."
+  ;;
+*)
+  set_env OGMA_LLM "off"; ok "Command-only mode (OGMA_LLM=off)."
   for s in persona model overlays skills; do unset "WANT[$s]"; done
   say "${c_dim}Skipping persona/model/overlays/skills — they only apply to the assistant layer.${c_rst}"
+  ;;
+esac
+if [ "$(grep -E '^OGMA_LLM=' "$ENV" | cut -d= -f2-)" != "off" ]; then
+  legacy_mem="$HOME/.claude/projects/$(printf '%s' "$HOME" | sed 's#/#-#g')/memory"
+  shared_mem="$legacy_mem"
+  mkdir -p "$shared_mem"; chmod 700 "$shared_mem" 2>/dev/null || true
+  set_env OGMA_MEMORY_DIR "$shared_mem"
+else
+  :
 fi
 fi
 
@@ -219,9 +238,10 @@ fi
 # --- Model & reasoning effort ------------------------------------------------
 if want model; then
 step "Model & reasoning effort"
+active_llm="$(grep -E '^OGMA_LLM=' "$ENV" 2>/dev/null | cut -d= -f2-)"
 # Live model list needs an API key; Claude Code subscription auth can't list models,
 # so this is best-effort — otherwise use the curated aliases (or type any full id).
-if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+if [ "$active_llm" = "claude" ] && [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   # The API key goes to curl via --config on a private fd, not argv.
   live="$(curl -sS -m 12 https://api.anthropic.com/v1/models \
             --config <(printf 'header = "x-api-key: %s"\n' "$ANTHROPIC_API_KEY") \
@@ -237,22 +257,30 @@ for m in d.get("data", []):
 ' 2>/dev/null)"
   [ -n "$live" ] && { say "Models available to your API key:"; printf '%s\n' "$live"; }
 fi
-say "Pick a model — Claude Code aliases (sonnet is a good default on a Pi):"
-say "  ${c_dim}sonnet = fast · haiku = fastest · opus = most capable but slower · default = Claude Code default · or type a full model id${c_rst}"
-m_choice="$(ask "Model" "sonnet")"
-case "$(printf '%s' "$m_choice" | tr '[:upper:]' '[:lower:]')" in
-  sonnet)     model_id="claude-sonnet-4-6" ;;
-  haiku)      model_id="claude-haiku-4-5" ;;
-  opus)       model_id="claude-opus-4-8" ;;
-  default|"") model_id="" ;;
-  *)          model_id="$m_choice" ;;
-esac
-set_env OGMA_MODEL "$model_id"; ok "Model: ${model_id:-(Claude Code default)}"
+if [ "$active_llm" = "codex" ]; then
+  say "Enter a Codex model id, or default to follow the CLI's current default."
+  m_choice="$(ask "Model" "default")"
+  case "$(printf '%s' "$m_choice" | tr '[:upper:]' '[:lower:]')" in
+    default|"") model_id="" ;; *) model_id="$m_choice" ;;
+  esac
+else
+  say "Pick a model — Claude Code aliases (sonnet is a good default on a Pi):"
+  say "  ${c_dim}sonnet = fast · haiku = fastest · opus = most capable but slower · default = Claude Code default · or type a full model id${c_rst}"
+  m_choice="$(ask "Model" "sonnet")"
+  case "$(printf '%s' "$m_choice" | tr '[:upper:]' '[:lower:]')" in
+    sonnet) model_id="claude-sonnet-4-6" ;; haiku) model_id="claude-haiku-4-5" ;;
+    opus) model_id="claude-opus-4-8" ;; default|"") model_id="" ;; *) model_id="$m_choice" ;;
+  esac
+fi
+set_env OGMA_MODEL "$model_id"; ok "Model: ${model_id:-(CLI default)}"
 
-eff="$(ask "Reasoning effort — low/medium/high/xhigh/max (blank = default)")"
+eff_options="low/medium/high/xhigh/max"; [ "$active_llm" = "codex" ] && eff_options="low/medium/high/xhigh"
+eff="$(ask "Reasoning effort — $eff_options (blank = default)")"
 effl="$(printf '%s' "$eff" | tr '[:upper:]' '[:lower:]')"
 case "$effl" in
-  low|medium|high|xhigh|max) set_env OGMA_EFFORT "$effl"; ok "Effort: $effl" ;;
+  low|medium|high|xhigh) set_env OGMA_EFFORT "$effl"; ok "Effort: $effl" ;;
+  max) if [ "$active_llm" = "claude" ]; then set_env OGMA_EFFORT max; ok "Effort: max";
+       else warn "Codex does not support max — leaving at default."; set_env OGMA_EFFORT ""; fi ;;
   ""|default)                set_env OGMA_EFFORT "";     ok "Effort: default" ;;
   *)                         warn "Unknown effort '$eff' — leaving at default."; set_env OGMA_EFFORT "" ;;
 esac
@@ -261,9 +289,13 @@ say "${c_dim}A fallback model is used automatically if the main one is unavailab
 fb="$(ask "Fallback model — alias or full id (blank = none)")"
 case "$(printf '%s' "$fb" | tr '[:upper:]' '[:lower:]')" in
   ""|none|off) set_env OGMA_FALLBACK_MODEL "";                     ok "Fallback: none" ;;
-  sonnet)      set_env OGMA_FALLBACK_MODEL "claude-sonnet-4-6";    ok "Fallback: claude-sonnet-4-6" ;;
-  haiku)       set_env OGMA_FALLBACK_MODEL "claude-haiku-4-5";     ok "Fallback: claude-haiku-4-5" ;;
-  opus)        set_env OGMA_FALLBACK_MODEL "claude-opus-4-8";      ok "Fallback: claude-opus-4-8" ;;
+  sonnet|haiku|opus)
+    if [ "$active_llm" = "claude" ]; then
+      case "${fb,,}" in sonnet) fb_id=claude-sonnet-4-6;; haiku) fb_id=claude-haiku-4-5;; opus) fb_id=claude-opus-4-8;; esac
+      set_env OGMA_FALLBACK_MODEL "$fb_id"; ok "Fallback: $fb_id"
+    else
+      set_env OGMA_FALLBACK_MODEL "$fb"; ok "Fallback: $fb"
+    fi ;;
   *)           set_env OGMA_FALLBACK_MODEL "$fb";                  ok "Fallback: $fb" ;;
 esac
 fi
@@ -279,7 +311,8 @@ step "Writing host-local overlays (gitignored)"
 # Read the owner from .env so this works even when the 'env' section wasn't selected.
 owner="$(grep -E '^OGMA_OWNER_NAME=' "$ENV" 2>/dev/null | cut -d= -f2-)"; [ -n "$owner" ] || owner="you"
 # Canonical auto-memory dir (same derivation the dream/briefing use: $HOME with / -> -).
-mem_dir="$HOME/.claude/projects/$(printf '%s' "$HOME" | sed 's#/#-#g')/memory"
+mem_dir="$(grep -E '^OGMA_MEMORY_DIR=' "$ENV" 2>/dev/null | cut -d= -f2-)"
+[ -n "$mem_dir" ] || mem_dir="$HOME/.claude/projects/$(printf '%s' "$HOME" | sed 's#/#-#g')/memory"
 cat > "$OGMA_DIR/workspace/CLAUDE.local.md" <<EOF
 ## Host notes (this machine)
 
@@ -310,6 +343,7 @@ fi
 # shellcheck source=/dev/null
 . "$OGMA_DIR/bin/_persona.sh"
 persona_render "$ENV" "$OGMA_DIR/workspace/CLAUDE.local.md"
+cp "$OGMA_DIR/workspace/CLAUDE.local.md" "$OGMA_DIR/workspace/AGENTS.local.md"
 cat > "$OGMA_DIR/workspace/.claude/settings.local.json" <<EOF
 {
   "permissions": {
@@ -347,11 +381,12 @@ ok "bin/ and hooks/ are executable."
 # --- Skills ------------------------------------------------------------------
 if want skills; then
 step "Installing skills (tickets, session-search, daily-briefing)"
-if yes "Install skills into ~/.claude/skills/?" "y"; then
-  mkdir -p "$HOME/.claude/skills"
+if yes "Install skills for both Claude Code and Codex?" "y"; then
+  mkdir -p "$HOME/.claude/skills" "$HOME/.codex/skills"
   for s in tickets session-search daily-briefing; do
-    dest="$HOME/.claude/skills/$s"
     src="$OGMA_DIR/skills/$s"
+    for skill_root in "$HOME/.claude/skills" "$HOME/.codex/skills"; do
+    dest="$skill_root/$s"
     if [ -L "$dest" ]; then
       ok "$s is a symlink — already tracks the repo."
     elif [ -e "$dest" ]; then
@@ -367,8 +402,9 @@ if yes "Install skills into ~/.claude/skills/?" "y"; then
     else
       cp -r "$src" "$dest"; ok "installed $s"
     fi
+    done
   done
-  say "${c_dim}(Tip: symlink instead — ln -s $OGMA_DIR/skills/<name> ~/.claude/skills/<name> — to track repo updates.)${c_rst}"
+  say "${c_dim}(Tip: symlink from either skills directory to $OGMA_DIR/skills/<name> to track updates.)${c_rst}"
 else
   warn "Skipped. The 'tickets' skill is what drives the workflow — install it later from skills/."
 fi
@@ -551,11 +587,17 @@ else
   printf '  model         : %s\n' "$(grep -E '^OGMA_MODEL=' "$ENV" | cut -d= -f2- | sed 's/^$/(Claude Code default)/')"
   printf '  effort        : %s\n' "$(grep -E '^OGMA_EFFORT=' "$ENV" | cut -d= -f2- | sed 's/^$/(default)/')"
   printf '  fallback      : %s\n' "$(grep -E '^OGMA_FALLBACK_MODEL=' "$ENV" | cut -d= -f2- | sed 's/^$/(none)/')"
-  printf '  claude CLI    : %s\n' "$([ -x "$CLAUDE_BIN" ] && echo "$CLAUDE_BIN" || echo MISSING)"
+  if [ "$llm_mode" = "codex" ]; then
+    printf '  codex CLI     : %s\n' "$([ -x "$CODEX_BIN" ] && echo "$CODEX_BIN" || echo MISSING)"
+  else
+    printf '  claude CLI    : %s\n' "$([ -x "$CLAUDE_BIN" ] && echo "$CLAUDE_BIN" || echo MISSING)"
+  fi
 fi
 { [ -n "$tok" ] && [ -n "$allowed" ]; } || warn "Token and/or allowed chats missing — Ogma won't respond until both are set (re-run setup)."
-if [ "$llm_mode" != "off" ] && [ ! -x "$CLAUDE_BIN" ]; then
-  warn "claude CLI not found — the gateway runs command-only until you install Claude Code (or set CLAUDE_BIN)."
+if [ "$llm_mode" = "claude" ] && [ ! -x "$CLAUDE_BIN" ]; then
+  warn "claude CLI not found — the gateway runs command-only until it is installed."
+elif [ "$llm_mode" = "codex" ] && [ ! -x "$CODEX_BIN" ]; then
+  warn "codex CLI not found — the gateway runs command-only until it is installed."
 fi
 
 if [ "$HAVE_SYSTEMD" = 1 ] && [ -n "$tok" ] && [ -n "$allowed" ]; then
