@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.6.0] — 2026-07-21
+
+### Added
+- **OpenAI Codex as a parallel assistant harness.** Set `OGMA_LLM=codex` to route
+  free-text messenger turns through authenticated, headless `codex exec` runs.
+  Each chat gets a persisted Codex thread resumed with `codex exec resume`;
+  Claude and Codex session mappings remain separate, so switching harnesses and
+  switching back preserves each conversation independently.
+- **Provider-neutral assistant routines.** Briefing and nightly dream select the
+  configured harness, Codex gets its own per-turn detached memory-persistence
+  pass, and session search/dream inspect both Claude and Codex transcripts.
+- **Codex-native configuration.** The workspace now carries `AGENTS.md`, setup
+  installs shared skills into both harnesses, and `.env` supports `CODEX_BIN`,
+  `CODEX_TIMEOUT`, `OGMA_CODEX_SANDBOX`, and `OGMA_CODEX_DREAM_MODEL`.
+
+### Changed
+- `bin/setup --reconfigure llm,model,overlays` now switches among Claude Code,
+  OpenAI Codex, and command-only mode. Persona, tickets, skills, and the existing
+  Claude home-project memory directory are shared across both harnesses.
+- `workspace/media/` is explicitly ignored as runtime input, preventing inbound
+  messenger attachments from ever entering a release.
+
 ## [2.5.0] — 2026-07-10
 
 ### Added
