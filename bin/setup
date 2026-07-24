@@ -12,6 +12,21 @@ OGMA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV="$OGMA_DIR/.env"
 EXAMPLE="$OGMA_DIR/.env.example"
 PY="python3"
+MATRIX_ENV="$OGMA_DIR/config/matrix_bot.env.local"
+
+# Read config with the same precedence as gateway.py: .env first, then the
+# Matrix host-local file when that transport is selected.
+. "$OGMA_DIR/bin/_env.sh"
+config_value() {
+  local key="$1" value
+  value="$(env_get "$ENV" "$key")"
+  if [ "$(env_get "$ENV" OGMA_TRANSPORT)" = "matrix" ] && [ -f "$MATRIX_ENV" ]; then
+    local matrix_value
+    matrix_value="$(env_get "$MATRIX_ENV" "$key")"
+    [ -n "$matrix_value" ] && value="$matrix_value"
+  fi
+  printf '%s' "$value"
+}
 
 c_bold=$'\033[1m'; c_dim=$'\033[2m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_red=$'\033[31m'; c_rst=$'\033[0m'
 say()  { printf '%s\n' "$*"; }
@@ -42,28 +57,42 @@ PY
 
 # Non-interactive health/config check — `bin/setup --check`. Changes nothing.
 do_check() {
-  local tok allowed llm cb codex_bin active_bin u problems=0
+  local transport credential allowed credential_label allowed_label llm model cb codex_bin active_bin u problems=0
   step "Ogma config check  ${c_dim}($OGMA_DIR)${c_rst}"
-  tok="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV" 2>/dev/null | cut -d= -f2-)"
-  allowed="$(grep -E '^TELEGRAM_ALLOWED_USERS=' "$ENV" 2>/dev/null | cut -d= -f2-)"
+  transport="$(config_value OGMA_TRANSPORT)"; transport="${transport:-telegram}"
+  if [ "$transport" = "matrix" ]; then
+    credential="$(config_value MATRIX_ACCESS_TOKEN)"
+    allowed="$(config_value MATRIX_ALLOWED_USERS)"
+    credential_label="Matrix access token"; allowed_label="Matrix allowed users"
+  else
+    credential="$(config_value TELEGRAM_BOT_TOKEN)"
+    allowed="$(config_value TELEGRAM_ALLOWED_USERS)"
+    credential_label="Telegram bot token"; allowed_label="Telegram allowed chats"
+  fi
   llm="$(grep -E '^OGMA_LLM=' "$ENV" 2>/dev/null | cut -d= -f2-)"
   cb="$(command -v claude || echo "$HOME/.local/bin/claude")"
   codex_bin="$(command -v codex || echo "$HOME/.local/bin/codex")"
   [ -f "$ENV" ] && ok ".env present" || { err ".env missing — run bin/setup"; problems=1; }
-  [ -n "$tok" ] && ok "token set" || { err "token MISSING"; problems=1; }
-  [ -n "$allowed" ] && ok "allowed chats: $allowed" || { err "allowed chats MISSING"; problems=1; }
+  ok "transport: $transport"
+  [ -n "$credential" ] && ok "$credential_label set" || { err "$credential_label MISSING"; problems=1; }
+  [ -n "$allowed" ] && ok "$allowed_label: $allowed" || { err "$allowed_label MISSING"; problems=1; }
   if [ "$llm" = "off" ]; then
     ok "LLM layer: off (command-only mode — no assistant CLI needed)"
   else
-    printf '  model     : %s\n' "$(grep -E '^OGMA_MODEL=' "$ENV" 2>/dev/null | cut -d= -f2- | sed 's/^$/(Claude Code default)/')"
+    model="$(grep -E '^OGMA_MODEL=' "$ENV" 2>/dev/null | cut -d= -f2-)"
+    printf '  model     : %s\n' "$(printf '%s\n' "$model" | sed "s/^$/($llm CLI default)/")"
+    if [ "$llm" = "codex" ] && [[ "$model" = claude-* ]]; then
+      err "Claude model configured for Codex — re-run: bin/setup --reconfigure model"
+      problems=1
+    fi
     printf '  effort    : %s\n' "$(grep -E '^OGMA_EFFORT=' "$ENV" 2>/dev/null | cut -d= -f2- | sed 's/^$/(default)/')"
     printf '  fallback  : %s\n' "$(grep -E '^OGMA_FALLBACK_MODEL=' "$ENV" 2>/dev/null | cut -d= -f2- | sed 's/^$/(none)/')"
     active_bin="$cb"; [ "$llm" = "codex" ] && active_bin="$codex_bin"
     [ -x "$active_bin" ] && ok "$llm CLI: $active_bin" || warn "$llm CLI missing ($active_bin)"
   fi
-  if [ -n "$tok" ] && command -v curl >/dev/null; then
+  if [ "$transport" = "telegram" ] && [ -n "$credential" ] && command -v curl >/dev/null; then
     # Token goes to curl via --config on a private fd, not argv (world-readable in /proc).
-    u="$(curl -sS -m 12 --config <(printf 'url = "https://api.telegram.org/bot%s/getMe"\n' "$tok") 2>/dev/null | "$PY" -c 'import sys,json
+    u="$(curl -sS -m 12 --config <(printf 'url = "https://api.telegram.org/bot%s/getMe"\n' "$credential") 2>/dev/null | "$PY" -c 'import sys,json
 try: d=json.load(sys.stdin)
 except Exception: print("?"); raise SystemExit
 print(("OK "+((d.get("result") or {}).get("username") or "?")) if d.get("ok") else "BAD")' 2>/dev/null)"
@@ -75,7 +104,8 @@ print(("OK "+((d.get("result") or {}).get("username") or "?")) if d.get("ok") el
   fi
   if [ "$llm" != "off" ]; then
     for s in tickets session-search daily-briefing; do
-      [ -e "$HOME/.claude/skills/$s" ] && ok "skill: $s" || warn "skill not installed: $s"
+      skill_root="$HOME/.claude/skills"; [ "$llm" = "codex" ] && skill_root="$HOME/.codex/skills"
+      [ -e "$skill_root/$s" ] && ok "skill: $s" || warn "skill not installed for $llm: $s"
     done
   fi
   say ""
@@ -135,11 +165,11 @@ if [ -f "$ENV" ]; then
     step "What do you want to (re)configure?"
     say ".env already exists — pick the sections to revisit (the rest stay as-is)."
     say "    1) env       Telegram token / your name / weather location"
-    say "    2) llm       assistant layer on/off (Claude Code vs. command-only)"
+    say "    2) llm       assistant harness (Claude Code, OpenAI Codex, or off)"
     say "    3) persona   assistant name / style / language"
     say "    4) model     model / reasoning effort / fallback"
     say "    5) overlays  regenerate host notes + Claude settings overlay"
-    say "    6) skills    (re)install skills into ~/.claude/skills"
+    say "    6) skills    (re)install skills for Claude Code and Codex"
     say "    7) systemd   (re)install systemd --user units (e.g. after a git pull adds one)"
     say "    8) auth      authorize a Telegram chat"
     say "${c_dim}  Enter numbers or names (comma/space separated), or 'all'. Blank = all.${c_rst}"
@@ -170,6 +200,7 @@ want() { [ -n "${WANT[$1]:-}" ]; }
 # offer to restart it at the end so the change actually takes effect. (skills/auth
 # don't need a gateway restart; systemd's daemon-reload doesn't either.)
 NEED_RESTART=0
+AUTO_SKILL_PROVIDER=""
 for s in env llm persona model overlays; do want "$s" && NEED_RESTART=1; done
 
 # --- .env (token / your name / weather) -------------------------------------
@@ -201,10 +232,14 @@ choice="$(ask "Harness: claude, codex, or off" "${cur_llm:-claude}")"
 case "$(printf '%s' "$choice" | tr '[:upper:]' '[:lower:]')" in
 claude)
   set_env OGMA_LLM "claude"; ok "Assistant layer: Claude Code."
+  WANT[model]=1
+  [ "$cur_llm" = "claude" ] || AUTO_SKILL_PROVIDER="claude"
   [ -x "$CLAUDE_BIN" ] || warn "claude CLI missing — gateway will use command-only mode."
   ;;
 codex)
   set_env OGMA_LLM "codex"; ok "Assistant layer: OpenAI Codex."
+  WANT[model]=1
+  [ "$cur_llm" = "codex" ] || AUTO_SKILL_PROVIDER="codex"
   [ -x "$CODEX_BIN" ] || warn "codex CLI missing — gateway will use command-only mode."
   ;;
 *)
@@ -259,7 +294,9 @@ for m in d.get("data", []):
 fi
 if [ "$active_llm" = "codex" ]; then
   say "Enter a Codex model id, or default to follow the CLI's current default."
-  m_choice="$(ask "Model" "default")"
+  current_model="$(grep -E '^OGMA_MODEL=' "$ENV" 2>/dev/null | cut -d= -f2-)"
+  case "$current_model" in claude-*) current_model="" ;; esac
+  m_choice="$(ask "Model" "${current_model:-default}")"
   case "$(printf '%s' "$m_choice" | tr '[:upper:]' '[:lower:]')" in
     default|"") model_id="" ;; *) model_id="$m_choice" ;;
   esac
@@ -275,7 +312,9 @@ fi
 set_env OGMA_MODEL "$model_id"; ok "Model: ${model_id:-(CLI default)}"
 
 eff_options="low/medium/high/xhigh/max"; [ "$active_llm" = "codex" ] && eff_options="low/medium/high/xhigh"
-eff="$(ask "Reasoning effort — $eff_options (blank = default)")"
+current_effort="$(grep -E '^OGMA_EFFORT=' "$ENV" 2>/dev/null | cut -d= -f2-)"
+case "$current_effort" in low|medium|high|xhigh) ;; max) [ "$active_llm" = "claude" ] || current_effort="" ;; *) current_effort="" ;; esac
+eff="$(ask "Reasoning effort — $eff_options" "${current_effort:-default}")"
 effl="$(printf '%s' "$eff" | tr '[:upper:]' '[:lower:]')"
 case "$effl" in
   low|medium|high|xhigh) set_env OGMA_EFFORT "$effl"; ok "Effort: $effl" ;;
@@ -379,6 +418,29 @@ chmod +x "$OGMA_DIR"/bin/* "$OGMA_DIR"/hooks/*.py 2>/dev/null || true
 ok "bin/ and hooks/ are executable."
 
 # --- Skills ------------------------------------------------------------------
+# A harness switch must leave the newly selected CLI ready to use. Install only
+# missing bundled skills here: an existing target may be locally customised and
+# is never overwritten implicitly. The explicit skills section below remains
+# available for reviewing/updating differing copies.
+if [ -n "$AUTO_SKILL_PROVIDER" ]; then
+step "Transferring Ogma skills to $AUTO_SKILL_PROVIDER"
+case "$AUTO_SKILL_PROVIDER" in
+  claude) auto_skill_root="$HOME/.claude/skills" ;;
+  codex)  auto_skill_root="$HOME/.codex/skills" ;;
+esac
+mkdir -p "$auto_skill_root"
+for s in tickets session-search daily-briefing; do
+  src="$OGMA_DIR/skills/$s"
+  dest="$auto_skill_root/$s"
+  if [ -e "$dest" ] || [ -L "$dest" ]; then
+    ok "$s already present for $AUTO_SKILL_PROVIDER."
+  else
+    cp -r "$src" "$dest"
+    ok "transferred $s to $AUTO_SKILL_PROVIDER."
+  fi
+done
+fi
+
 if want skills; then
 step "Installing skills (tickets, session-search, daily-briefing)"
 if yes "Install skills for both Claude Code and Codex?" "y"; then
@@ -574,17 +636,27 @@ fi
 
 # --- Done --------------------------------------------------------------------
 step "Done"
-tok="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV" | cut -d= -f2-)"
-allowed="$(grep -E '^TELEGRAM_ALLOWED_USERS=' "$ENV" | cut -d= -f2-)"
+transport="$(config_value OGMA_TRANSPORT)"; transport="${transport:-telegram}"
+if [ "$transport" = "matrix" ]; then
+  credential="$(config_value MATRIX_ACCESS_TOKEN)"
+  allowed="$(config_value MATRIX_ALLOWED_USERS)"
+  credential_label="Matrix token"; allowed_label="Matrix users"
+else
+  credential="$(config_value TELEGRAM_BOT_TOKEN)"
+  allowed="$(config_value TELEGRAM_ALLOWED_USERS)"
+  credential_label="Telegram token"; allowed_label="Telegram chats"
+fi
 
 llm_mode="$(grep -E '^OGMA_LLM=' "$ENV" | cut -d= -f2-)"
 say "${c_bold}Config summary${c_rst}"
-printf '  token         : %s\n' "$([ -n "$tok" ] && echo set || echo MISSING)"
-printf '  allowed chats : %s\n' "${allowed:-MISSING}"
+printf '  transport     : %s\n' "$transport"
+printf '  %-13s : %s\n' "$credential_label" "$([ -n "$credential" ] && echo set || echo MISSING)"
+printf '  %-13s : %s\n' "$allowed_label" "${allowed:-MISSING}"
+printf '  llm           : %s\n' "${llm_mode:-claude}"
 if [ "$llm_mode" = "off" ]; then
-  printf '  llm           : off (command-only mode)\n'
+  printf '  mode          : command-only\n'
 else
-  printf '  model         : %s\n' "$(grep -E '^OGMA_MODEL=' "$ENV" | cut -d= -f2- | sed 's/^$/(Claude Code default)/')"
+  printf '  model         : %s\n' "$(grep -E '^OGMA_MODEL=' "$ENV" | cut -d= -f2- | sed "s/^$/($llm_mode CLI default)/")"
   printf '  effort        : %s\n' "$(grep -E '^OGMA_EFFORT=' "$ENV" | cut -d= -f2- | sed 's/^$/(default)/')"
   printf '  fallback      : %s\n' "$(grep -E '^OGMA_FALLBACK_MODEL=' "$ENV" | cut -d= -f2- | sed 's/^$/(none)/')"
   if [ "$llm_mode" = "codex" ]; then
@@ -593,14 +665,14 @@ else
     printf '  claude CLI    : %s\n' "$([ -x "$CLAUDE_BIN" ] && echo "$CLAUDE_BIN" || echo MISSING)"
   fi
 fi
-{ [ -n "$tok" ] && [ -n "$allowed" ]; } || warn "Token and/or allowed chats missing — Ogma won't respond until both are set (re-run setup)."
+{ [ -n "$credential" ] && [ -n "$allowed" ]; } || warn "$credential_label and/or $allowed_label missing — Ogma won't respond until both are set."
 if [ "$llm_mode" = "claude" ] && [ ! -x "$CLAUDE_BIN" ]; then
   warn "claude CLI not found — the gateway runs command-only until it is installed."
 elif [ "$llm_mode" = "codex" ] && [ ! -x "$CODEX_BIN" ]; then
   warn "codex CLI not found — the gateway runs command-only until it is installed."
 fi
 
-if [ "$HAVE_SYSTEMD" = 1 ] && [ -n "$tok" ] && [ -n "$allowed" ]; then
+if [ "$HAVE_SYSTEMD" = 1 ] && [ -n "$credential" ] && [ -n "$allowed" ]; then
   if systemctl --user is-active --quiet ogma-gateway 2>/dev/null; then
     # Already running. The gateway reads .env/persona/overlays at startup, so changes
     # to those only take effect on a restart — offer one if we touched them.

@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.7.0] — 2026-07-24
+
+### Changed
+- **Harness switching is now complete and provider-aware.** Selecting Claude or
+  Codex automatically opens model configuration, rejects a stale Claude model
+  when Codex is active, preserves valid effort settings, and installs missing
+  bundled skills for the newly selected harness without overwriting customized
+  copies.
+- **Setup health checks and summaries now follow the active transport.** Matrix
+  installations validate and report their Matrix access token and allowed users
+  instead of incorrectly requiring Telegram credentials. CLI defaults and
+  provider-specific skill locations are reported accurately.
+- **README streamlined.** The guide now leads with the independent transport
+  (Telegram/Matrix) and assistant (Claude/Codex/off) choices, with concise setup,
+  security, operation, and configuration sections.
+
 ## [2.6.0] — 2026-07-21
 
 ### Added
