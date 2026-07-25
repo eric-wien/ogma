@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project aims to follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.7.1] — 2026-07-25
+
+### Fixed
+- **Nightly dream now follows the selected assistant harness.** Fresh installs
+  and harness switches keep `OGMA_DREAM_MODEL` aligned with the configured
+  Claude or Codex model, setup detects cross-provider mismatches, and the dream
+  runner safely ignores stale provider-incompatible values.
+
 ## [2.7.0] — 2026-07-24
 
 ### Changed
