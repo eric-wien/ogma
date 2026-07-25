@@ -53,14 +53,19 @@ if ! llm_available; then
   exit 0
 fi
 
-# Default to the explicit standard-context model id, NOT the bare 'sonnet' alias:
-# in headless runs the alias can resolve to the credit-gated 1M-context variant
-# (a large nightly transcript sweep tripped "Usage credits required for 1M context").
-# Pinning the full id forces the standard 200k window. Keep in sync with bin/setup.
+# Setup keeps this canonical setting aligned with the selected harness. Retain
+# the old Codex-only variable as a migration fallback, and defensively ignore a
+# provider-incompatible stale value on machines that have not rerun setup yet.
+model="$(cfg DREAM_MODEL)"
 if [ "$provider" = "codex" ]; then
-  model="$(cfg CODEX_DREAM_MODEL)"; model="${model:-$(cfg MODEL)}"
+  [[ "$model" = claude-* ]] && model=""
+  model="${model:-$(cfg CODEX_DREAM_MODEL)}"
+  model="${model:-$(cfg MODEL)}"
 else
-  model="$(cfg DREAM_MODEL)"; model="${model:-claude-sonnet-4-6}"
+  [[ "$model" = gpt-* ]] && model=""
+  # Use the explicit standard-context id, not the bare sonnet alias: in
+  # headless runs the alias can resolve to a credit-gated 1M-context variant.
+  model="${model:-claude-sonnet-4-6}"
 fi
 
 read -r -d '' PROMPT <<EOF

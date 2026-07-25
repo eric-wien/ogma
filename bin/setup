@@ -57,7 +57,7 @@ PY
 
 # Non-interactive health/config check — `bin/setup --check`. Changes nothing.
 do_check() {
-  local transport credential allowed credential_label allowed_label llm model cb codex_bin active_bin u problems=0
+  local transport credential allowed credential_label allowed_label llm model dream_model cb codex_bin active_bin u problems=0
   step "Ogma config check  ${c_dim}($OGMA_DIR)${c_rst}"
   transport="$(config_value OGMA_TRANSPORT)"; transport="${transport:-telegram}"
   if [ "$transport" = "matrix" ]; then
@@ -83,6 +83,13 @@ do_check() {
     printf '  model     : %s\n' "$(printf '%s\n' "$model" | sed "s/^$/($llm CLI default)/")"
     if [ "$llm" = "codex" ] && [[ "$model" = claude-* ]]; then
       err "Claude model configured for Codex — re-run: bin/setup --reconfigure model"
+      problems=1
+    fi
+    dream_model="$(grep -E '^OGMA_DREAM_MODEL=' "$ENV" 2>/dev/null | cut -d= -f2-)"
+    printf '  dream     : %s\n' "$(printf '%s\n' "$dream_model" | sed "s/^$/($llm model/default)/")"
+    if { [ "$llm" = "codex" ] && [[ "$dream_model" = claude-* ]]; } ||
+       { [ "$llm" = "claude" ] && [[ "$dream_model" = gpt-* ]]; }; then
+      err "Dream model belongs to the other harness — re-run: bin/setup --reconfigure model"
       problems=1
     fi
     printf '  effort    : %s\n' "$(grep -E '^OGMA_EFFORT=' "$ENV" 2>/dev/null | cut -d= -f2- | sed 's/^$/(default)/')"
@@ -310,6 +317,19 @@ else
   esac
 fi
 set_env OGMA_MODEL "$model_id"; ok "Model: ${model_id:-(CLI default)}"
+
+# Dream is an unattended invocation of the selected harness, so its model must
+# switch providers with the harness too. Keep one canonical setting rather than
+# leaving a stale Claude model beside a Codex selection (or vice versa).
+if [ "$active_llm" = "claude" ]; then
+  dream_model="${model_id:-claude-sonnet-4-6}"
+else
+  dream_model="$model_id"
+fi
+set_env OGMA_DREAM_MODEL "$dream_model"
+# Clear the old provider-specific override so it cannot resurrect after a switch.
+set_env OGMA_CODEX_DREAM_MODEL ""
+ok "Dream model: ${dream_model:-($active_llm CLI default)}"
 
 eff_options="low/medium/high/xhigh/max"; [ "$active_llm" = "codex" ] && eff_options="low/medium/high/xhigh"
 current_effort="$(grep -E '^OGMA_EFFORT=' "$ENV" 2>/dev/null | cut -d= -f2-)"
@@ -657,6 +677,7 @@ if [ "$llm_mode" = "off" ]; then
   printf '  mode          : command-only\n'
 else
   printf '  model         : %s\n' "$(grep -E '^OGMA_MODEL=' "$ENV" | cut -d= -f2- | sed "s/^$/($llm_mode CLI default)/")"
+  printf '  dream model   : %s\n' "$(grep -E '^OGMA_DREAM_MODEL=' "$ENV" | cut -d= -f2- | sed "s/^$/($llm_mode model/default)/")"
   printf '  effort        : %s\n' "$(grep -E '^OGMA_EFFORT=' "$ENV" | cut -d= -f2- | sed 's/^$/(default)/')"
   printf '  fallback      : %s\n' "$(grep -E '^OGMA_FALLBACK_MODEL=' "$ENV" | cut -d= -f2- | sed 's/^$/(none)/')"
   if [ "$llm_mode" = "codex" ]; then
